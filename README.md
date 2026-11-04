@@ -1,5 +1,9 @@
 # open-ledger · 家庭 / 小团队账本
 
+[![tests](https://github.com/rain-Qing/open-ledger/actions/workflows/tests.yml/badge.svg)](https://github.com/rain-Qing/open-ledger/actions/workflows/tests.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+
 一个面向家庭与小团队的自托管账本，支持支出 / 收入 / 退款、冲抵与报销、净额统计、CSV 导出和可选的 AI 记账。
 
 - **单文件后端**：`ledger/server.py`，Python 3.11+ 标准库 + SQLite，无第三方依赖
