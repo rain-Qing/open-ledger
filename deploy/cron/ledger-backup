@@ -1,0 +1,2 @@
+# 家庭账本每日备份，04:35 执行
+35 4 * * * root /usr/local/bin/ledger-backup.sh >> /var/log/ledger-backup.log 2>&1

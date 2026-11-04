@@ -1,0 +1,5 @@
+# 一律 LF 检出/入库，避免 .sh 的 shebang 变成 "#!/bin/bash\r"
+* text=auto eol=lf
+
+# 二进制资源不做换行符转换
+*.png binary

@@ -1,0 +1,21 @@
+[Unit]
+Description=Family Ledger (家庭账本)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/ledger
+Environment=LEDGER_HOME=/opt/ledger
+Environment=LEDGER_PORT=9103
+ExecStart=/usr/bin/python3 /opt/ledger/server.py
+Restart=always
+RestartSec=3
+MemoryMax=96M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/ledger/data
+
+[Install]
+WantedBy=multi-user.target

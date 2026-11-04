@@ -1,0 +1,3889 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#faf9f7">
+<title>家庭账本</title>
+<!-- 主屏幕相关：iOS 只有带这些声明，从桌面图标打开才是全屏 App 形态
+     （没有 Safari 地址栏和工具栏，可视区多出约 100px） -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="账本">
+<!-- 图标：iOS 既不吃 data: URI 的图标，也不吃 SVG 版 favicon。之前 PNG 排在
+     data: SVG 后面，桌面书签就退化成黑底「家」字默认图。必须 PNG 在前、真实 URL。 -->
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="manifest" href="/manifest.webmanifest">
+<style>
+:root{
+  --bg:#faf9f7; --card:#fff; --ink:#1b1b1d; --muted:#6d6d73; --faint:#9a9aa1;
+  --line:#e8e6e2; --accent:#2f6f5e; --accent-soft:#e8f1ee;
+  --expense:#1b1b1d; --income:#2f6f5e; --refund:#b45309; --danger:#b3261e;
+  /* 明细行的方向底色：支出保持白卡，只有收入/退款上色（见 §明细行）。
+     彩色的都是「需要抬头看一眼」的，成堆的支出保持安静 */
+  --income-soft:#f3f8f5; --refund-soft:#fdf7ef; --rail:#d9d6cf;
+  --radius:14px;
+  --nav-h:62px; /* 底栏高度，由 JS 实测后覆写，body 下边距 / toast 位置都引用它 */
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+/* overflow-x:clip 是「弹层被切」的兜底：页面只要有一处横向溢出，iOS/WebView 会把
+   布局视口一起撑宽，而所有 position:fixed 的层（弹层、底栏）都按视口宽度渲染，于是
+   右侧被切掉——2026-10-29 的「所有二级窗口显示不全」就是这么来的（源头是汇总行）。
+   用 clip 而不是 hidden：hidden 会造出滚动容器（还会让 sticky 头失效），clip 只是裁掉，
+   不产生可滚动区域，也就不会撑宽视口。 */
+html{height:100%;-webkit-text-size-adjust:100%;text-size-adjust:100%;overflow-x:clip}
+/* 注意：body 不能写死 height:100%。否则内容超出时是「溢出 body 盒子」，
+   padding-bottom 就落不到内容末尾，最后一屏正好被固定底栏盖住。 */
+body{
+  margin:0;min-height:100%;
+  background:var(--bg);color:var(--ink);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  padding-bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 14px);
+  overflow-x:clip;  /* 兜底：任何一处超宽都不该让整页可横向拖动 / 触发 iOS 缩放 */
+}
+button,input,select,textarea{font:inherit;color:inherit}
+/* iOS Safari 的输入框字号小于 16px 时，一聚焦就把整页放大，而且按站点记住缩放级别
+   ——「点开就大了一点、要双指缩小」正是这个（body 是 15px，font:inherit 会把输入框
+   也带到 15px）。输入控件一律 16px 起；#amount 的 44px 是 id 选择器，不受影响。 */
+input,select,textarea{font-size:16px}
+button{cursor:pointer}
+/* hidden 属性必须能压住 .row / .chips 这类带 display 的类，否则「隐藏」不生效
+   （元素自带的 display:flex 会盖掉浏览器给 [hidden] 的 display:none） */
+[hidden]{display:none!important}
+
+/* ---------- 登录 ---------- */
+#login{max-width:360px;margin:0 auto;padding:18vh 24px 24px}
+#login h1{font-size:22px;margin:0 0 4px;letter-spacing:.5px}
+#login p.sub{color:var(--muted);font-size:13px;margin:0 0 28px}
+.field{margin-bottom:12px}
+.field label{display:block;font-size:12px;color:var(--muted);margin-bottom:6px}
+.field input,.field select,.field textarea{
+  width:100%;padding:12px 14px;border:1px solid var(--line);border-radius:11px;
+  background:var(--card);outline:none;transition:border-color .15s;
+}
+.field input:focus,.field select:focus,.field textarea:focus{border-color:var(--accent)}
+/* 只读字段：冲抵记录的「方向 / 分类」是继承原单的，服务端保存时会强制覆盖。
+   这里不给下拉——否则「选了、保存了、还是原样」，用户只会以为自己手滑。
+   长得像只读输入框，一眼能看出「这不是我能填的」。 */
+.field .ro{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:12px 14px;border:1px solid var(--line);border-radius:11px;
+  background:#f7f6f3;color:var(--ink);
+}
+.field .ro .ro-tag{
+  flex:none;font-size:11.5px;color:var(--muted);background:#efeee9;
+  border-radius:999px;padding:3px 9px;white-space:nowrap;
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:6px;
+  padding:12px 18px;border:none;border-radius:11px;background:var(--accent);color:#fff;
+  font-weight:600;width:100%;transition:opacity .15s;
+}
+.btn:active{opacity:.85}
+.btn.ghost{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.btn.small{width:auto;padding:8px 14px;font-size:13px;border-radius:9px}
+.btn.danger{background:transparent;color:var(--danger);border:1px solid var(--line)}
+/* 提示文字里的行内小按钮（如差补「改回自动」），长得像链接、不占一行 */
+.linkbtn{background:none;border:0;padding:0;color:var(--accent);font:inherit;text-decoration:underline;cursor:pointer}
+
+/* ---------- 记账提交：在途遮罩 + 结果抽屉 ---------- */
+/* 为什么不再是页顶那张卡：卡片插在文档流最前面，而「记这笔」在页面最末尾——
+   提交时视口停在底部，卡片渲染在视口之外，等于没提示。
+   提示只要待在文档流里，它的可见性就取决于提交那一刻手指停在哪；改用模态，与滚动位置无关。 */
+
+/* 在途遮罩：350ms 才浮出。本地请求 300~800ms 就回来，立即浮出只会闪一下、更让人不安。
+   2.5s 文案升级，6s 放出「先看看明细」——拖到 6 秒基本只剩「连上了但不回数据」这一种情况。 */
+.blocker{
+  position:fixed;inset:0;z-index:100;display:none;
+  background:rgba(27,27,29,.42);align-items:center;justify-content:center;flex-direction:column;gap:14px;
+}
+.blocker.on{display:flex}
+.bl-card{
+  display:flex;align-items:center;gap:10px;background:var(--card);
+  border-radius:12px;padding:14px 20px;font-size:14px;color:var(--ink);
+  box-shadow:0 6px 24px rgba(0,0,0,.14);
+}
+.spin{
+  width:16px;height:16px;flex:none;border-radius:50%;
+  border:2px solid var(--line);border-top-color:var(--accent);
+  animation:spin .7s linear infinite;
+}
+@keyframes spin{to{transform:rotate(360deg)}}
+.bl-cancel{
+  background:none;border:1px solid rgba(255,255,255,.6);color:#fff;
+  border-radius:9px;padding:7px 14px;font-size:13px;
+}
+
+/* 结果抽屉：抄既有 .sheet 的形态（fixed + 底部滑入 + 安全区），
+   和编辑弹层同一套语言，用户不用学第二遍 */
+.rsp-mask{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:60;display:none}
+.rsp-mask.on{display:block}
+.rsp{
+  position:fixed;left:0;right:0;bottom:0;z-index:61;background:var(--bg);
+  border-radius:18px 18px 0 0;padding:16px 16px calc(16px + env(safe-area-inset-bottom));
+  transform:translateY(102%);transition:transform .22s ease;
+  max-width:720px;margin:0 auto;
+}
+.rsp.on{transform:translateY(0)}
+.rsp-hd{display:flex;align-items:center;gap:8px}
+.rsp-ic{
+  width:20px;height:20px;border-radius:50%;background:var(--accent);color:#fff;flex:none;
+  display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;line-height:1;
+}
+.rsp-title{font-size:15px;font-weight:650;color:var(--accent);letter-spacing:.3px;min-width:0}
+.rsp-x{
+  margin-left:auto;background:none;border:0;padding:0 4px;line-height:1;
+  font-size:22px;color:var(--faint);flex:none;
+}
+.rsp-amt{
+  font-size:30px;font-weight:700;letter-spacing:-.8px;margin:8px 0 2px;
+  font-variant-numeric:tabular-nums;
+}
+.rsp-meta{font-size:13px;color:var(--muted);line-height:1.6}
+.rsp-note{font-size:13px;color:var(--ink);margin-top:4px;word-break:break-word}
+.rsp-tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.rsp-tag{
+  font-size:11.5px;color:var(--accent);background:var(--accent-soft);
+  border-radius:999px;padding:2px 8px;
+}
+/* 「记错了」是文字链不是按钮：撤销频率低，占主按钮位会干扰「确认」这个主要目的。
+   拇指区留给高频的「记完了」，想连续记的人伸手 30px 就是「再记一笔」。 */
+.rsp-act{display:flex;align-items:center;gap:8px;margin-top:16px;justify-content:flex-end}
+.rsp-act button{white-space:nowrap}
+.rsp-undo{
+  margin-right:auto;background:none;border:0;padding:4px 0;font-size:13px;
+  color:var(--danger);text-decoration:underline;
+}
+.rsp-undo:disabled{opacity:.5}
+.rsp-more{
+  background:transparent;border:1px solid var(--accent);color:var(--accent);
+  border-radius:10px;padding:10px 14px;font-size:14px;
+}
+.rsp-ok{
+  background:var(--accent);border:1px solid var(--accent);color:#fff;
+  border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;
+}
+
+/* ---------- 分类管理（管理员）----------
+   一屏只看一棵树：方向胶囊 + 紧凑列表，点开哪行才展开子类和颜色。
+   以前每个大类永远处于编辑态（名字输入框 + 10 个色块常驻），16 个大类铺两千多像素。 */
+.cat-tabs{display:flex;gap:8px;margin-bottom:12px}
+.cat-list{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.cat-item + .cat-item{border-top:1px solid var(--line)}
+/* 占位块插在两项之间时，下面那项的顶边线还得在（原规则只管「项 + 项」） */
+.cat-list > .cat-ph + .cat-item{border-top:1px solid var(--line)}
+.cat-item.open{background:#fbfaf8}
+.cat-hd{display:flex;align-items:center;gap:9px;padding:12px 13px;cursor:pointer;min-height:46px;
+  -webkit-touch-callout:none;user-select:none}
+.cat-hd:active{background:#f4f2ef}
+/* 长按拖拽：拖动中的那一项脱离文档流跟着手指走，虚线块标出会落在哪。
+   pointer-events:none 是必须的——否则 elementFromPoint 只会命中它自己，找不到下面的兄弟项 */
+.cat-item.dragging{position:fixed;z-index:60;margin:0;border:1px solid var(--line);border-radius:12px;
+  background:var(--card);box-shadow:0 12px 28px rgba(0,0,0,.18);pointer-events:none}
+.cat-ph{border:1px dashed var(--accent);border-radius:12px;background:rgba(47,111,94,.05);
+  pointer-events:none}
+.cat-dot{width:9px;height:9px;border-radius:50%;flex:none}
+.cat-hd .nm{font-size:14px;font-weight:600;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cat-hd .meta{font-size:11.5px;color:var(--faint);white-space:nowrap}
+.cat-hd .arw{width:6px;height:6px;flex:none;margin-left:2px;
+  border-right:1.5px solid var(--faint);border-bottom:1.5px solid var(--faint);
+  transform:rotate(45deg);transition:transform .15s}
+.cat-item.open .arw{transform:rotate(-135deg)}
+.cat-detail{padding:0 13px 13px}
+.cat-detail .f-label{font-size:11.5px;color:var(--muted);margin:12px 0 6px}
+.cat-detail .f-label span{color:var(--faint);font-weight:400}
+.cat-detail input#cat-pname{
+  width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:9px;
+  background:var(--card);font-size:14px;font-weight:600;color:var(--ink);outline:none;
+}
+.cat-detail input#cat-pname:focus{border-color:var(--accent)}
+.cat-err{font-size:11.5px;color:var(--danger);margin-top:5px}
+.cat-swatches{display:flex;gap:6px;flex-wrap:wrap}
+.cat-sw{width:22px;height:22px;border-radius:7px;border:1px solid var(--line);padding:0}
+.cat-subs{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.cat-sub{font-size:12.5px;padding:5px 10px;border:1px solid var(--line);
+  background:var(--card);border-radius:8px;color:var(--ink);
+  -webkit-touch-callout:none;user-select:none}
+.cat-sub:active{background:#f4f2ef}
+/* 子类拖动：同样是固定跟随 + 虚线占位（胶囊形状） */
+.cat-sub.dragging{position:fixed;z-index:60;margin:0;background:var(--card);pointer-events:none;
+  box-shadow:0 10px 22px rgba(0,0,0,.18);border-color:var(--accent)}
+.cat-ph-sub{border:1px dashed var(--accent);border-radius:8px;background:rgba(47,111,94,.06);
+  pointer-events:none}
+.cat-sub.edit{display:inline-flex;align-items:center;gap:1px;padding:0 4px 0 8px;
+  border-color:var(--accent);background:var(--accent-soft)}
+.cat-sub.edit input{width:62px;border:none;background:transparent;outline:none;
+  font-size:12.5px;color:var(--ink);padding:5px 0}
+.cat-sub.edit .x{color:var(--danger);font-size:15px;line-height:1;padding:0 3px;font-weight:400}
+.cat-sub-new{width:78px;font-size:12.5px;padding:5px 8px;border:1px dashed var(--line);
+  border-radius:8px;background:transparent;color:var(--muted);outline:none}
+.cat-sub-new:focus{border-color:var(--accent);border-style:solid}
+.cat-addp{width:100%;margin-top:9px;padding:9px;font-size:12.5px;color:var(--muted);
+  background:transparent;border:1px dashed var(--line);border-radius:9px;outline:none}
+.cat-addp:focus{border-color:var(--accent);border-style:solid}
+.cat-delp{width:100%;margin-top:14px;padding:9px;font-size:12.5px;border-radius:9px;
+  color:var(--danger);background:transparent;border:1px solid var(--line)}
+.cat-delp.armed{background:#fbeceb;border-color:#f2d3d0;font-weight:600}
+/* 未保存浮条：贴在底栏上方，改了才出现 */
+.cat-bar{position:fixed;left:0;right:0;bottom:calc(var(--nav-h,54px) + 8px);z-index:25;
+  display:none;padding:0 16px;max-width:720px;margin:0 auto}
+.cat-bar.on{display:block}
+.cat-bar-in{display:flex;align-items:center;gap:9px;padding:9px 12px;border-radius:12px;
+  background:var(--card);border:1px solid var(--line);box-shadow:0 6px 18px rgba(0,0,0,.08)}
+.cat-bar-in .n{font-size:12.5px;color:var(--muted);flex:1}
+.cat-spacer{height:52px}
+
+/* ---------- 布局 ---------- */
+header{
+  position:sticky;top:0;z-index:20;background:rgba(250,249,247,.92);
+  backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line);
+}
+.hd{max-width:720px;margin:0 auto;padding:14px 16px;display:flex;align-items:center;gap:10px}
+.hd h2{font-size:16px;margin:0;font-weight:650;letter-spacing:.3px}
+.hd .who{margin-left:auto;font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hd-out{
+  flex:none;border:1px solid var(--line);background:var(--card);color:var(--muted);
+  border-radius:9px;padding:5px 10px;font-size:12px;font-weight:600;
+}
+.hd-out:active{background:#f4f2ef}
+main{max-width:720px;margin:0 auto;padding:16px}
+nav{
+  position:fixed;left:0;right:0;bottom:0;z-index:30;background:rgba(255,255,255,.94);
+  backdrop-filter:saturate(180%) blur(14px);border-top:1px solid var(--line);
+  padding-bottom:env(safe-area-inset-bottom);
+}
+.nav-in{max-width:720px;margin:0 auto;display:flex}
+.nav-in button{
+  flex:1;background:none;border:none;padding:9px 0 10px;color:var(--faint);
+  font-size:11px;display:flex;flex-direction:column;align-items:center;gap:3px;
+}
+.nav-in button.on{color:var(--accent)}
+.nav-in svg{width:21px;height:21px;stroke-width:1.7}
+
+/* ---------- 通用卡片 ---------- */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:12px}
+.card h3{margin:0 0 12px;font-size:13px;font-weight:600;color:var(--muted);letter-spacing:.4px}
+.row{display:flex;align-items:center;gap:10px}
+.spread{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.mono{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+
+/* ---------- 记一笔 ---------- */
+.seg{display:flex;gap:6px;background:#f1efec;padding:4px;border-radius:12px;margin-bottom:16px}
+.seg button{flex:1;border:none;background:transparent;padding:9px 0;border-radius:9px;font-size:14px;color:var(--muted);font-weight:600}
+.seg button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.07)}
+.amount-wrap{text-align:center;padding:8px 0 18px}
+.amount-wrap .cur{font-size:20px;color:var(--faint);vertical-align:6px}
+#amount{
+  border:none;background:transparent;text-align:center;width:100%;
+  font-size:44px;font-weight:650;letter-spacing:-1px;outline:none;
+  padding:0;font-variant-numeric:tabular-nums;
+}
+#amount::placeholder{color:#d8d6d2}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{
+  border:1px solid var(--line);background:var(--card);border-radius:9px;
+  padding:7px 12px;font-size:13px;color:var(--muted);
+}
+.chip.on{background:var(--accent-soft);border-color:#bfd8cf;color:var(--accent);font-weight:600}
+/* 标记胶囊的第二态「排除」：红底 + ✕，跟「没选中」的白底必须一眼分得开，
+   否则用户以为筛选没生效（2026-10-29 反选） */
+.chip.ex{background:#fbeceb;border-color:#f2d3d0;color:var(--danger);font-weight:600}
+#f-marks .chip.ex::before{content:"✕ "}
+.chip.sub{font-size:12.5px;padding:6px 10px}
+/* 带固定底色的胶囊：--c 主色 / --bg 浅底 / --ink 文字色，由 JS 按账号或分类注入 */
+.chip.pchip,.chip.cchip{background:var(--bg);border-color:transparent;color:var(--ink)}
+.chip.pchip.on,.chip.cchip.on{
+  background:var(--bg);border-color:var(--c);color:var(--ink);font-weight:700;
+  box-shadow:inset 0 0 0 1px var(--c);
+}
+.chip.sub.on{background:var(--bg);border-color:var(--c);color:var(--ink);box-shadow:inset 0 0 0 1px var(--c)}
+.toggles{display:flex;gap:8px;flex-wrap:wrap}
+/* 编辑弹层有 4 个开关，一行放不下，排成整齐的两列 */
+.toggles.grid4{display:grid;grid-template-columns:1fr 1fr}
+.tg{
+  flex:1;min-width:96px;border:1px solid var(--line);background:var(--card);border-radius:11px;
+  padding:11px 9px;text-align:left;display:flex;align-items:center;gap:8px;justify-content:center;
+}
+.tg .dot{width:17px;height:17px;border-radius:50%;border:1.5px solid #cbc9c4;flex:none}
+.tg.on{border-color:#bfd8cf;background:var(--accent-soft)}
+.tg.on .dot{background:var(--accent);border-color:var(--accent);box-shadow:inset 0 0 0 3px #fff}
+.tg span{font-size:13px}
+/* 有报销到账记录时「已报销」锁死：状态由那条记录决定，不能在这里翻 */
+.tg[disabled]{opacity:.5}
+.tg[disabled] .dot{border-style:dashed}
+/* 报销状态被锁时的说明块：先讲为什么，再让人看到两个灰掉的开关。
+   放在开关下面时它像脚注，用户根本不会往下看——挪到上面并加了底色 */
+.lock-note{
+  margin:14px 0 6px;padding:10px 12px;border-radius:11px;
+  background:#fdf7ec;border:1px solid #f0e2c8;color:#8a6320;
+  font-size:12.5px;line-height:1.65;
+}
+.lock-note b{display:block;margin-bottom:3px;font-size:13px;color:#6f4f16}
+
+/* AI */
+.ai-box{display:flex;gap:8px;margin-bottom:12px}
+.ai-box input{flex:1;min-width:0;padding:11px 13px;border:1px solid var(--line);border-radius:11px;background:var(--card);outline:none}
+.ai-box button{white-space:nowrap;padding:0 16px;border:none;border-radius:11px;background:#1b1b1d;color:#fff;font-size:13px;font-weight:600}
+.ai-box button:disabled{opacity:.5}
+/* 拍图按钮刻意做成浅色描边，跟主按钮拉开层次：主操作还是「说一句」 */
+.ai-box .ai-pic{flex:none;width:42px;padding:0;display:flex;align-items:center;justify-content:center;
+  background:var(--card);border:1px solid var(--line);color:var(--muted)}
+.ai-box .ai-pic svg{width:19px;height:19px;stroke-width:1.6}
+.ai-shot{position:relative;margin:-4px 0 12px}
+.ai-shot img{display:block;width:100%;max-height:190px;object-fit:cover;border-radius:11px;border:1px solid var(--line)}
+.ai-shot i{position:absolute;top:7px;right:7px;width:26px;height:26px;border-radius:50%;
+  background:rgba(0,0,0,.55);color:#fff;font-style:normal;font-size:13px;line-height:26px;text-align:center}
+/* 识图后把「模型读到了什么」摊给用户看，金额读错一眼就能发现 */
+.ai-hint{margin:-2px 0 12px;padding:9px 11px;border-radius:9px;background:var(--accent-soft);
+  color:#2f6f5e;font-size:12.5px;line-height:1.5}
+.log-row{display:flex;gap:8px;align-items:baseline;padding:8px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.log-row:last-child{border-bottom:none}
+.log-tag{flex:none;font-size:11px;padding:1px 6px;border-radius:5px;background:var(--accent-soft);color:var(--accent)}
+.log-tag.bad{background:#fbeceb;color:var(--danger)}
+.log-main{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-meta{flex:none;color:var(--faint);font-variant-numeric:tabular-nums;text-align:right}
+
+/* ---------- 明细 ---------- */
+.day{margin-bottom:16px}
+.day-hd{display:flex;justify-content:space-between;font-size:12px;color:var(--muted);padding:0 4px 7px}
+/* 明细行：方向落在整张卡上——支出白卡、收入淡绿、退款淡橙。
+   一家人一天吃住行十几笔支出，给每张卡都涂色只会发灰；让收入和退款变成「例外」，
+   扫一眼就能看出钱进来还是出去。左边缘统一 4px 竖条，保证三种行左边界对齐。
+   颜色不是唯一线索：金额前的 − + ↩ 仍然保留，色弱也读得出方向。 */
+.tx{
+  background:var(--card);border:1px solid var(--line);border-left:4px solid var(--rail);
+  border-radius:12px;padding:11px 13px;margin-bottom:7px;display:flex;align-items:center;gap:10px;
+}
+.tx.dir-income{background:var(--income-soft);border-color:#dbeae4;border-left-color:var(--income)}
+.tx.dir-refund{background:var(--refund-soft);border-color:#f1e2cd;border-left-color:var(--refund)}
+.tx:active{background:#fdfcfa}
+.tx.dir-income:active{background:#e9f3ef}
+.tx.dir-refund:active{background:#fbf0e2}
+.tx .body{flex:1;min-width:0;min-height:38px;display:flex;flex-direction:column;justify-content:center}
+/* 标题是「一级 / 二级」的路径：只让二级加粗，一级退成浅灰小字——
+   整屏的重心就落在「午餐/买菜/早餐」这几个具体词上，不再一坨加黑 */
+.tx .t1{font-size:14px;display:flex;align-items:baseline;gap:4px;min-width:0;overflow:hidden}
+.tx .t1 i{font-style:normal;font-size:11.5px;color:var(--faint);white-space:nowrap;flex:none}
+.tx .t1 b{font-weight:600;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 第二行只放备注，标记徽标排在它前面；两样都没有时整行不输出 */
+.tx .t2{font-size:12px;color:var(--muted);margin-top:2px;display:flex;align-items:center;gap:5px;min-width:0}
+.tx .t2 .txt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tx .t2 .date{flex:none;color:var(--faint)}
+.tx .amt-col{flex:none;text-align:right}
+.tx .amt{font-size:15px;font-weight:650;white-space:nowrap;font-variant-numeric:tabular-nums}
+/* 原额：只在有冲抵时出现，退成小字放在净额下面——主数字说「这笔花了多少」，
+   小字说「账单上原本是多少」，两个数都在，才不会看错也不会对不上账 */
+.tx .amt-sub{font-size:10.5px;color:var(--faint);margin-top:1px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.tx .own{font-size:11px;color:var(--faint);margin-top:1px;white-space:nowrap}
+/* 徽标一律白底 + 描边：淡绿/淡橙的卡片上不会和底色调混，白卡上也不抢标题 */
+.badge{font-size:11px;padding:0 5px;border-radius:5px;background:#fff;border:1px solid var(--line);
+  color:var(--muted);line-height:16px;white-space:nowrap;flex:none}
+.badge.shared{color:var(--accent);border-color:#cfe3dc}
+.badge.pending{color:#b45309;border-color:#f0d9b8}
+.badge.reimb{color:#2f6f5e;border-color:#cfe3dc}
+.badge.voucher{color:#6d629a;border-color:#dcd8ee}
+.badge.travel{color:#39688c;border-color:#cfdde9}
+.badge.refunded{color:#5a6473;border-color:#dde2e8}
+.tx .quick{
+  flex:none;border:1px solid #f0d9b8;background:#fff8ee;color:#b45309;
+  border-radius:8px;padding:5px 9px;font-size:11.5px;font-weight:600;
+}
+.tx .quick:active{background:#fdf1e3}
+.tx .quick.muted{border-color:var(--line);background:var(--card);color:var(--muted)}
+/* 彩色卡上奶白按钮会糊，统一拔成白底 */
+.tx.dir-income .quick,.tx.dir-refund .quick{background:#fff}
+/* 冲抵候选：一行一笔，左边日期+分类+备注，右边剩余金额与匹配标签 */
+.chip.tgt{
+  display:flex;align-items:center;gap:10px;width:100%;text-align:left;
+  margin-bottom:6px;padding:9px 12px;
+}
+.chip.tgt .tgt-main{
+  flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.chip.tgt .tgt-main b{font-weight:600;margin-right:4px}
+.chip.tgt .tgt-side{
+  flex:none;display:flex;align-items:center;gap:6px;justify-content:flex-end;
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+/* 金额永远贴右边对齐，左边的标签宽窄不一也不会让数字跳动 */
+.chip.tgt .tgt-amt{font-weight:600}
+.chip.tgt .tgt-tag{
+  font-style:normal;font-size:11px;font-weight:600;padding:2px 6px;border-radius:6px;
+  background:var(--bg);color:var(--muted);border:1px solid var(--line);
+}
+.chip.tgt .tgt-tag.same{background:var(--accent-soft);color:var(--accent);border-color:#bfd8cf}
+.chip.tgt .tgt-tag.kw{background:#e9f1f8;color:#39688c;border-color:#cfe0ee}
+.chip.tgt .tgt-tag.bad{background:#fbeceb;color:#b3261e;border-color:#f2d3d0}
+.chip.tgt.on{font-weight:600}
+.tgt-more{
+  margin-top:10px;background:none;border:none;padding:4px 0;cursor:pointer;
+  color:var(--muted);font-size:12.5px;text-decoration:underline;text-underline-offset:3px;
+}
+.tgt-search{margin-top:9px}
+/* 退款/处理弹层里的原单信息块 */
+.refund-src{background:#f7f6f3;border:1px solid var(--line);border-radius:11px;padding:11px 13px;margin-bottom:14px}
+.refund-src .rs-t{font-size:13.5px;font-weight:600}
+.refund-src .rs-s{font-size:12px;color:var(--muted);margin-top:3px}
+.refund-line{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:6px 0;border-bottom:1px dashed var(--line)}
+.refund-line .mono{margin-left:auto}
+.refund-line:last-child{border-bottom:none}
+/* 借款台账：明细页顶部的提醒条，不进统计 */
+.loan-bar{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+  background:#fff8ee;border:1px solid #f0d9b8;color:#8a5a1f;border-radius:11px;
+  padding:9px 13px;margin-bottom:10px;text-align:left;
+}
+.loan-bar.empty{background:var(--card);border-color:var(--line);color:var(--muted);font-weight:400}
+.loan-bar .lb-left{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.loan-bar .lb-title{font-size:13.5px;font-weight:600}
+.loan-bar.empty .lb-title{font-weight:500}
+.loan-bar .lb-sub{font-size:11.5px;opacity:.8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loan-bar .lb-right{flex:none;font-size:12px;opacity:.75;font-weight:500;white-space:nowrap}
+.loan-panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:4px 13px 12px;margin-bottom:12px}
+.loan-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-bottom:1px dashed var(--line);font-size:13px}
+.loan-row:last-child{border-bottom:none}
+.loan-row .l-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.loan-row .l-t,.loan-row .l-s{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.loan-row .l-s{font-size:11.5px;color:var(--muted)}
+.loan-row .l-right{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:4px}
+.loan-row .l-amt{font-variant-numeric:tabular-nums;font-weight:600}
+.loan-row.settled{opacity:.55}
+.loan-act{background:none;border:none;color:var(--accent);font-size:12px;padding:0;font-weight:600}
+
+/* ---------- 统计 ---------- */
+.kpis{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:12px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:13px 14px}
+.kpi .k{font-size:11.5px;color:var(--muted);margin-bottom:5px}
+.kpi .v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.bar-line{margin-bottom:11px}
+.bar-line .top{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:5px}
+.bar-line .track{height:7px;background:#f0eeea;border-radius:5px;overflow:hidden}
+.bar-line .fill{height:100%;background:var(--accent);border-radius:5px}
+
+/* 本月收支卡 */
+.bal-wrap{display:flex;align-items:baseline;gap:9px;margin-bottom:14px}
+.bal-label{font-size:12px;color:var(--muted)}
+.bal{font-size:32px;font-weight:700;letter-spacing:-.6px;font-variant-numeric:tabular-nums;line-height:1.1}
+.bal .cur{font-size:17px;font-weight:600;margin-right:1px}
+.bal.pos{color:var(--accent)}
+.bal.neg{color:var(--danger)}
+.io-bar{display:flex;height:10px;border-radius:6px;overflow:hidden;background:#f0eeea;margin-bottom:10px}
+.io-seg.in{background:var(--accent)}
+.io-seg.out{background:#c07a3a}
+.io-legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted)}
+.io-legend span{display:inline-flex;align-items:center;gap:5px}
+.io-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.io-dot.in{background:var(--accent)}
+.io-dot.out{background:#c07a3a}
+.io-dot.rfd{background:var(--refund)}
+
+/* 饼图 + 图例 */
+.pie-wrap{display:flex;flex-wrap:wrap;align-items:center;gap:14px}
+.pie-fig{flex:none;width:168px;height:168px;margin:0 auto}
+.pie-fig svg{display:block;width:100%;height:100%}
+.pie-legend{flex:1 1 170px;min-width:150px}
+.pl-row{display:flex;align-items:center;gap:7px;font-size:12.5px;padding:3.5px 0}
+.pl-dot{width:9px;height:9px;border-radius:3px;flex:none}
+.pl-name{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pl-val{color:var(--muted);font-size:12px}
+.pl-pct{width:34px;text-align:right;color:var(--faint);font-size:11.5px}
+
+/* 统计卡片里能点进明细的行：整行都是按钮，右侧数字后面跟一个 › 当提示 */
+.stat-link{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;
+  background:none;border:none;padding:5px 0;margin:0;text-align:left;
+}
+.stat-link:active{opacity:.55}
+.stat-link .amt{
+  display:inline-flex;align-items:center;gap:6px;flex:none;
+  font-weight:700;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+.stat-link .go{font-style:normal;font-weight:400;font-size:16px;line-height:1;color:var(--faint)}
+
+.empty{text-align:center;color:var(--faint);font-size:13px;padding:44px 0}
+.month-pick{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+.month-pick input{flex:1;min-width:0;padding:9px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card)}
+/* 月份框吃掉剩余宽度，筛选/排序两枚按钮不收缩、不换行（窄屏 320px 也不挤） */
+.month-pick .btn{flex:none;white-space:nowrap;padding-left:11px;padding-right:11px}
+/* 「全部月份」替代空月份框：占住月份框的位置，文字左对齐才像输入框 */
+.month-pick .month-all{flex:1;min-width:0;justify-content:flex-start;font-weight:500;color:var(--muted)}
+/* 自定义跨年区间的文字会很长（2025-12-01 ~ 2026-11-03），
+   超宽就省略，别把「筛选 / 排序 / 导出」挤出去；完整的在 title 和条件行里
+   ✕ 单独一个 span，省略到它头上就点不掉了 */
+.month-pick .month-all .rc-t{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.month-pick .month-all .rc-x{flex:none;margin-left:4px}
+/* 汇总行：「共 N 笔」+ 一串合计，整体 flex-wrap。
+   合计不能整段 nowrap——数字一长（月支出五位数 + 退款 + 报销 + 净额）一行能到 500px，
+   比手机视口还宽，会把布局视口顶宽、连带所有 fixed 弹层被切（2026-10-29 线上事故）。
+   现在每一段自己不断行，段与段之间随意换行。 */
+.sum-line{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--muted);padding:0 4px 10px;font-variant-numeric:tabular-nums}
+.sum-line span,.sum-line i{white-space:nowrap}
+.sum-line i{font-style:normal}
+/* 净流出是这个页面的主数字：有冲抵时它排第一并加粗，原额支出退成后面的注脚 */
+.sum-line i.net{color:var(--ink);font-weight:650}
+/* 搜索/筛选生效时的那行「条件：…」，容许换行 */
+.cond-line{font-size:11.5px;color:var(--muted);padding:0 4px 10px;margin-top:-4px;line-height:1.5;word-break:break-word}
+/* 关键词命中 */
+mark{background:#fdefc3;color:inherit;border-radius:3px;padding:0 1px}
+/* 筛选面板 */
+.f-group{margin-bottom:14px}
+.f-label{font-size:12px;color:var(--muted);margin-bottom:7px}
+.f-group input{
+  width:100%;padding:10px 12px;border:1px solid var(--line);border-radius:10px;
+  background:var(--card);outline:none;
+}
+.f-group input:focus{border-color:var(--accent)}
+.hint{font-size:12px;color:var(--muted);line-height:1.6}
+.toast{
+  position:fixed;left:50%;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom) + 16px);transform:translateX(-50%);
+  background:rgba(27,27,29,.92);color:#fff;padding:9px 16px;border-radius:10px;font-size:13px;
+  opacity:0;pointer-events:none;transition:opacity .2s;z-index:99;max-width:86vw;text-align:center;
+}
+.toast.on{opacity:1}
+.sheet-mask{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:40;display:none}
+.sheet-mask.on{display:block}
+.sheet{
+  position:fixed;left:0;right:0;bottom:0;z-index:41;background:var(--bg);
+  border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+  max-height:86vh;overflow:auto;transform:translateY(102%);transition:transform .22s ease;
+  max-width:720px;margin:0 auto;
+}
+.sheet.on{transform:translateY(0)}
+.sheet h3{margin:0 0 14px;font-size:16px}
+/* 二级弹层（冲抵分配）：盖在一级编辑弹层之上，遮罩加深一档，层级关系一眼可辨 */
+.sheet2-mask{position:fixed;inset:0;background:rgba(0,0,0,.42);z-index:50;display:none}
+.sheet2-mask.on{display:block}
+.sheet2{
+  position:fixed;left:0;right:0;bottom:0;z-index:51;background:var(--bg);
+  border-radius:18px 18px 0 0;padding:18px 16px calc(18px + env(safe-area-inset-bottom));
+  max-height:86vh;overflow:auto;transform:translateY(102%);transition:transform .22s ease;
+  max-width:720px;margin:0 auto;
+}
+.sheet2.on{transform:translateY(0)}
+.sheet2 h3{margin:0 0 14px;font-size:16px}
+/* 分配行：左边是原单信息，右边是本次分多少 */
+.alloc{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:11px 12px;margin-bottom:10px}
+.alloc .a-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.alloc .a-cat{font-size:14px;font-weight:600}
+.alloc .a-note{font-size:12px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alloc .a-in{display:flex;align-items:center;gap:8px;margin-top:9px}
+/* min-width:0 必须有：input 的默认尺寸会撑开 flex 容器，整行跟着溢出屏幕 */
+.alloc .a-in input{flex:1;min-width:0;border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:16px;background:var(--bg);color:var(--ink)}
+.alloc .a-top span{min-width:0}
+.alloc .a-top .hint{flex:none;white-space:nowrap}
+.alloc .a-del{border:0;background:none;color:var(--danger);font-size:13px;padding:8px 4px;cursor:pointer;flex:none}
+.alloc-sum{display:flex;gap:14px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-bottom:12px}
+.alloc-sum b{color:var(--ink);font-weight:600}
+.alloc-sum .over{color:var(--danger);font-weight:600}
+@media(min-width:760px){
+  main{padding:22px 16px}
+}
+</style>
+</head>
+<body>
+
+<!-- 登录 -->
+<div id="login" hidden>
+  <h1>家庭账本</h1>
+  <p class="sub">两个人，一本账</p>
+  <div class="field"><label>用户名</label><input id="lu" autocomplete="username" autocapitalize="none"></div>
+  <div class="field"><label>密码</label><input id="lp" type="password" autocomplete="current-password"></div>
+  <button class="btn" id="lbtn">登录</button>
+</div>
+
+<!-- 主界面 -->
+<div id="app" hidden>
+  <header><div class="hd">
+    <h2 id="page-title">记一笔</h2>
+    <span class="who" id="whoami"></span>
+    <button class="hd-out" id="logout-top">退出</button>
+  </div></header>
+  <main id="view"></main>
+  <nav><div class="nav-in" id="nav"></div></nav>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="sheet-mask" id="mask"></div>
+<div class="sheet" id="sheet"></div>
+<div class="sheet2-mask" id="mask2"></div>
+<div class="sheet2" id="sheet2"></div>
+
+<div class="blocker" id="blocker">
+  <div class="bl-card"><span class="spin"></span><span id="bl-text">正在记…</span></div>
+  <button class="bl-cancel" id="bl-cancel" hidden>先看看明细</button>
+</div>
+<div class="rsp-mask" id="rsp-mask"></div>
+<div class="rsp" id="rsp"></div>
+
+<script>
+"use strict";
+const $ = (s, r = document) => r.querySelector(s);
+/* 本地时区的当前月份。不要用 toISOString()——那是 UTC，UTC+8 每月 1 号 0~8 点会算成上个月 */
+function nowMonth() {
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0");
+}
+const state = {
+  me: null, meta: null, tab: "add", month: nowMonth(),
+  form: { direction: "expense", cat_parent: "", category: "", shared: false, reimb_pending: false, pending_use: false, reimbursed: false, travel: false, owner_id: null },
+  /* scope 决定时间范围怎么取（时间维度只能有一个来源，否则和顶部月份框打架）：
+     month = 跟顶部月份框走；range = 用 start/end；all = 不限时间 */
+  filter: { direction: "", mark: "", owner: "", cat_parent: "", q: "", min: "", max: "",
+            scope: "month", start: "", end: "" },
+  sort: "date_desc",  // 明细排序：与 filter 正交，两者同时生效（键名对应后端 TX_ORDERS）
+  target: null,   // 退款要冲抵哪一笔支出：id / "none"（用户明确选的不冲抵）/ null（未定）
+  offsetKind: "refund",  // 走「退款/报销」方向时：refund 退货退款 / reimb 报销到账
+  /* 报销是「一次到账摊多笔」，所以是数组不是单值。退款仍用上面的 target（一单一单退） */
+  reimbSel: [],
+  subsidyText: "",   // 到账金额里有多少是差补（记收入，不冲抵）
+  subsidyCat: "",    // 差补的子类，默认取「补贴」树第一项
+  /* 差补默认自动算（到账 − 已选支出合计）并回填。用户只要自己改过这一栏就置 true，
+     之后不再被自动值覆盖——出差几天是他知道、系统不知道的事 */
+  subsidyManual: false,
+  targetSig: "",  // 金额/归属/备注的指纹，变了就重新自动匹配
+  pinned: null,   // 从「搜更早的账单」里选中的候选（不在 30 天候选里）
+  editing: null,
+  /* 冲抵分配（二级弹层）：一条到账摊在多笔支出上，先在本数组里改，点保存才整体提交。
+     整份替换而不是逐条调接口——一次请求内金额守恒成立，不会出现中间态 */
+  alloc: [], allocTotal: 0, allocOffset: null,
+  /* AI 区：图存 data URL、文字和「识别到」的提示都放 state，
+     因为点分类/标记会整页重渲染，不存 state 就会把用户刚拍的小票弄丢 */
+  aiText: "", aiImage: "", aiHint: "",
+  /* 幂等键：标识「这一次提交」，不是这笔账的内容。落账成功后换新的，
+     所以两笔金额分类都一样的真实消费各有各的键，照记两条；
+     而双击 / 断网重发 / 结果未知时再点一次复用的是同一个键，服务端只落一条。 */
+  formToken: newToken(),
+  saving: false,      // 请求在途：挡住同一笔的第二个 POST
+  lastSaved: null,    // 刚落账那一笔，供「已记上」回执卡展示（可撤销）
+};
+
+/* 随机串：https 下 crypto.randomUUID 都有；老 WebView 兜底用时间戳 + 随机数 */
+function newToken() {
+  try {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+  } catch (e) {}
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10)
+    + Math.random().toString(36).slice(2, 6);
+}
+/* 账号固定配色：天蓝 = 成员 A、粉 = 成员 B……
+   取色按 user.id 排序，与「谁排在最前」无关，否则换个登录人颜色就跟着变了 */
+const OWNER_PALETTE = [
+  { c: "#3aa0d8", bg: "#e6f4fc", ink: "#1b6c93" },   // 天蓝
+  { c: "#e888a8", bg: "#fdeef3", ink: "#a33f62" },   // 粉
+  { c: "#8a7fb5", bg: "#f0eef8", ink: "#6d629a" },   // 紫
+  { c: "#7fa86b", bg: "#eff5ea", ink: "#5a7a49" },   // 橄榄绿
+];
+const OWNER_FALLBACK = { c: "#8e8e95", bg: "#f0f0f2", ink: "#77777e" };
+function ownerColor(id) {
+  const us = ((state.meta && state.meta.users) || []).slice().sort((a, b) => a.id - b.id);
+  const i = us.findIndex(u => u.id === id);
+  return i < 0 ? OWNER_FALLBACK : OWNER_PALETTE[i % OWNER_PALETTE.length];
+}
+
+/* 分类固定配色：大类名 → 色位号。写死类名而不是「按树里第几个」——
+   这样增删大类、调整顺序都不会让其它大类的颜色跟着变。 */
+const CAT_PALETTE = [
+  { c: "#2f6f5e", bg: "#e8f1ee", ink: "#2f6f5e" },   // 0 绿
+  { c: "#c07a3a", bg: "#fbf0e6", ink: "#9e6129" },   // 1 橙棕（暖）
+  { c: "#4a7fa8", bg: "#e9f1f8", ink: "#39688c" },   // 2 钢蓝
+  { c: "#b3261e", bg: "#fbeceb", ink: "#97201a" },   // 3 红
+  { c: "#8a7fb5", bg: "#f0eef8", ink: "#6d629a" },   // 4 紫
+  { c: "#c9a227", bg: "#faf4e0", ink: "#8a6c11" },   // 5 金
+  { c: "#5b8f7f", bg: "#eaf3f0", ink: "#45756a" },   // 6 青绿
+  { c: "#a86f6f", bg: "#f8ecec", ink: "#8a5757" },   // 7 玫瑰灰
+  { c: "#6d8f5f", bg: "#eff4ea", ink: "#547344" },   // 8 草绿
+  { c: "#8e8e95", bg: "#f0f0f2", ink: "#77777e" },   // 9 灰
+];
+/* 分类配色：服务端配置下发每个一级分类的色位号（state.meta.cat_colors[dir][parent]），
+   没配置色位的按树序兜底——增删大类、改名都不会让别的类变色（改名全链条 UPDATE，
+   统计自动跟随同一个配置）。 */
+function catColor(parent, direction) {
+  const dir = direction || "expense";
+  const slotCfg = state.meta && state.meta.cat_colors && state.meta.cat_colors[dir];
+  const slot = slotCfg ? slotCfg[parent] : null;
+  if (slot != null) return CAT_PALETTE[slot % CAT_PALETTE.length];
+  // 没配色的按树序兜底
+  const tree = (state.meta && state.meta.categories && state.meta.categories[dir]) || {};
+  const i = Object.keys(tree).indexOf(parent);
+  return CAT_PALETTE[(i < 0 ? 0 : i) % CAT_PALETTE.length];
+}
+/* 不确定大类属于哪个方向时（筛选面板、混合列表），按各方向顺序找第一个命中的 */
+function catColorAny(parent) {
+  const cats = (state.meta && state.meta.categories) || {};
+  for (const dir of Object.keys(cats)) if (parent in cats[dir]) return catColor(parent, dir);
+  return CAT_PALETTE[0];
+}
+const chipVars = col => `--c:${col.c};--bg:${col.bg};--ink:${col.ink}`;
+
+/* 「归属」候选：只给真人账号，管理员是后台账号不参与记账；
+   当前登录的人永远排最前（默认选中的人也在这条链路上） */
+const ownerList = () => {
+  const us = (state.meta && state.meta.users && state.meta.users.length)
+    ? state.meta.users.slice() : [state.me];
+  const meId = state.me && state.me.id;
+  return us.sort((a, b) => {
+    if (a.id === meId) return -1;
+    if (b.id === meId) return 1;
+    return a.id - b.id;
+  });
+};
+
+const money = c => "¥" + (c / 100).toFixed(2);
+
+/* ---------------- 金额输入：唯一口径 ----------------
+   以前各处直接 parseFloat(value)，于是「12abc」被静默记成 12 元、「1e3」记成 1000 元、
+   「12.345」记成 12.35 —— 全是用户没打算输入的数，而且看不出错在哪。
+   现在输入时就清洗，提交前按同一套规则再解析一次，绝不「猜」一个数字出来。 */
+const AMOUNT_MAX_CENTS = 100_000_000;   // 与后端 _create_tx 的上限一致：单笔 100 万元
+
+/* 只留数字和一个小数点，最多两位小数；全角数字、中文句号先归一化
+   （iOS 中文键盘很容易打出「１２．５」这种） */
+function cleanAmount(text) {
+  let v = String(text == null ? "" : text)
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[．。]/g, ".")
+    .replace(/[^\d.]/g, "");
+  const dot = v.indexOf(".");
+  if (dot >= 0) v = v.slice(0, dot + 1) + v.slice(dot + 1).replace(/\./g, "");
+  const [int, dec] = v.split(".");
+  let out = int.slice(0, 7);               // 整数 7 位封顶，再多也超不过上限
+  if (dec !== undefined) out += "." + dec.slice(0, 2);
+  if (out.startsWith(".")) out = "0" + out;
+  return out;
+}
+
+/* 解析成「分」；不合法一律 null，由调用方给提示（猜错就是记错账） */
+function parseAmount(text) {
+  const v = cleanAmount(text);
+  if (!/^\d+(\.\d{1,2})?$/.test(v)) return null;
+  const cents = Math.round(parseFloat(v) * 100);
+  return cents > 0 && cents <= AMOUNT_MAX_CENTS ? cents : null;
+}
+
+/* 绑到金额输入框：边输边清洗，光标按「清洗后前面还剩几个字」还原，
+   删中间字符时不会跳到末尾。必须在设置 oninput 之前调用，清洗才会先跑。 */
+function bindAmountInput(el) {
+  if (!el) return;
+  el.addEventListener("input", () => {
+    const raw = el.value, clean = cleanAmount(raw);
+    if (clean === raw) return;
+    const pos = el.selectionStart == null ? raw.length : el.selectionStart;
+    const kept = cleanAmount(raw.slice(0, pos)).length;
+    el.value = clean;
+    try { el.setSelectionRange(kept, kept); } catch (e) { /* 老浏览器没有就算了 */ }
+  });
+}
+
+/* 备注是用户自由输入，插进 innerHTML 前必须转义 */
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g,
+  ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+/* 日期工具：筛选的快捷区间都从这里算。减月份时先落到 1 号再减，
+   否则 5-31 减 3 个月会溢出成 3-2，区间起点飘到下一个月 */
+const isoDate = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-`
+  + `${String(d.getDate()).padStart(2, "0")}`;
+const today = () => isoDate(new Date());
+function daysAgo(n) {
+  const d = new Date(); d.setDate(d.getDate() - n); return isoDate(d);
+}
+function monthsAgo(n) {
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - n); return isoDate(d);
+}
+function toast(msg) {
+  const t = $("#toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(t._t); t._t = setTimeout(() => t.classList.remove("on"), 2200);
+}
+/* 写操作的在途锁。双击一次就发两条请求，是这个页面最容易犯的错：
+   记退款的两条各自「不超过剩余可退」都能过，于是一笔钱退成两笔。
+   saveTx 有自己完整的三层防重（saving + client_token），这里只补其余的按钮。 */
+async function withBusy(btn, fn) {
+  if (!btn || btn._busy) return;
+  btn._busy = true;
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "保存中…";
+  try { return await fn(); }
+  finally { btn._busy = false; btn.disabled = false; btn.textContent = label; }
+}
+
+/* 连上了却不回数据，是最难查的一类故障：await 永不落定，调用方的 finally 不执行，
+   界面上就是「按钮一直是保存中」，之后每次点击都被防重锁静默吞掉。
+   15 秒到了主动断开，统一走「结果未知」分支——和断网一个话术，不谎报失败。 */
+const apiTimeout = () => (window.__API_TIMEOUT__ || 15000);
+
+async function api(path, opts = {}) {
+  let res;
+  const ctrl = typeof AbortController === "function" ? new AbortController() : null;
+  const timer = ctrl ? setTimeout(() => ctrl.abort(), apiTimeout()) : 0;
+  try {
+    res = await fetch("/api" + path, {
+      credentials: "same-origin",
+      headers: opts.body ? { "Content-Type": "application/json" } : {},
+      ...opts,
+      signal: ctrl ? ctrl.signal : undefined,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (err) {
+    // 没拿到响应 ≠ 没执行。写操作这时候「结果未知」，服务端可能已经落库了，
+    // 打上 network 标记让调用方用「可能已成功」的话术，别一句「失败」骗人重录。
+    const e = new Error("网络中断，请稍后重试");
+    e.network = true;
+    if (err && err.name === "AbortError") e.timeout = true;   // 只给排查用，界面话术不区分
+    throw e;
+  } finally {
+    // 必须在读 body 之前清掉：fetch 已经返回，这时候再 abort 会把读 body 也一起掐断
+    if (timer) clearTimeout(timer);
+  }
+  let data = {};
+  try { data = await res.json(); }
+  catch (err) {
+    // 状态码 200 但 body 断了（切网、后台被回收）同样是「结果未知」
+    if (res.ok) { const e = new Error("网络中断，请稍后重试"); e.network = true; throw e; }
+  }
+  if (!res.ok) {
+    // 只抛一句中文文案，调用方就没法分支了：分类保存靠 code 区分
+    // 「有历史不能删」（拦下）和「会改写历史」（可以确认后继续），
+    // 靠匹配中文提示迟早被一句文案改动打死。明细（如 preview 计划）一并带出。
+    const e = new Error(data.error || "请求失败");
+    e.status = res.status;
+    if (data.code) e.code = data.code;
+    if (data.preview) e.preview = data.preview;
+    throw e;
+  }
+  return data;
+}
+
+/* ---------------- 登录 ---------------- */
+async function boot() {
+  try {
+    const r = await api("/me");
+    if (r.user) return enter(r.user);
+  } catch (e) {}
+  showLogin();
+}
+function showLogin() {
+  $("#login").hidden = false; $("#app").hidden = true;
+  $("#lbtn").onclick = doLogin;
+  $("#lp").onkeydown = e => { if (e.key === "Enter") doLogin(); };
+  $("#lu").focus();
+}
+async function doLogin() {
+  const username = $("#lu").value.trim(), password = $("#lp").value;
+  if (!username || !password) return toast("请填写用户名和密码");
+  $("#lbtn").disabled = true;
+  try {
+    await api("/login", { method: "POST", body: { username, password } });
+    const r = await api("/me");
+    enter(r.user);
+  } catch (e) { toast(e.message); }
+  finally { $("#lbtn").disabled = false; }
+}
+async function enter(user) {
+  state.me = user;
+  state.meta = await api("/meta");
+  if (!state.form.owner_id || !ownerList().some(u => u.id === state.form.owner_id)) {
+    state.form.owner_id = user.id;
+  }
+  $("#login").hidden = true; $("#app").hidden = false;
+  $("#whoami").textContent = user.display_name;
+  $("#logout-top").onclick = doLogout;
+  renderNav(); render();
+}
+async function doLogout() {
+  if (!confirm("确定退出登录？")) return;
+  try { await api("/logout", { method: "POST", body: {} }); } catch (e) {}
+  state.me = null; state.meta = null;
+  state.form = { direction: "expense", cat_parent: "", category: "", shared: false,
+                 reimb_pending: false, pending_use: false, reimbursed: false, owner_id: null };
+  state.filter = { direction: "", mark: "", exclude: "", owner: "", cat_parent: "", q: "", min: "", max: "" };
+  state.target = null;
+  state.amountText = ""; state.noteText = ""; state.dateText = "";
+  $("#app").hidden = true;
+  showLogin();
+  toast("已退出登录");
+}
+
+/* ---------------- 导航 ---------------- */
+const TABS = [
+  { id: "add", name: "记一笔", icon: '<path d="M12 5v14M5 12h14"/>' },
+  { id: "list", name: "明细", icon: '<path d="M4 6h16M4 12h16M4 18h10"/>' },
+  { id: "stats", name: "统计", icon: '<path d="M5 20V10M12 20V4M19 20v-7"/>' },
+  { id: "me", name: "设置", icon: '<circle cx="12" cy="8" r="3.4"/><path d="M4.5 20a7.5 7.5 0 0115 0"/>' },
+];
+function renderNav() {
+  $("#nav").innerHTML = TABS.map(t =>
+    `<button data-tab="${t.id}" class="${state.tab === t.id ? "on" : ""}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">${t.icon}</svg>
+      ${t.name}</button>`).join("");
+  $("#nav").querySelectorAll("button").forEach(b => b.onclick = () => {
+    // 分类改动只在内存草稿里，切走就没了——问一句再走，别让人白改
+    if (state.tab === "me" && b.dataset.tab !== "me") {
+      const n = catDiffCount();
+      if (n && !confirm(`分类里有 ${n} 处改动还没保存，离开就会丢弃。确定离开？`)) return;
+      catEdit = null; catBase = null;
+    }
+    state.tab = b.dataset.tab; $("#page-title").textContent = TABS.find(t => t.id === state.tab).name;
+    // 抽屉只在「刚记完」那一刻有意义，切走再回来还弹着「已记上」会让人以为刚又记了一笔
+    if (state.tab !== "add") { state.lastSaved = null; closeReceipt(); }
+    renderNav(); render(); window.scrollTo(0, 0);
+  });
+  syncNavHeight();
+}
+/* 底栏真实高度写进 --nav-h，body 的下边距跟着走，任何字号/屏宽都不会再压住内容 */
+function syncNavHeight() {
+  const el = $("#nav");
+  if (el && el.offsetHeight) document.documentElement.style.setProperty("--nav-h", el.offsetHeight + "px");
+}
+addEventListener("resize", syncNavHeight);
+function render() {
+  $("#page-title").textContent = TABS.find(t => t.id === state.tab).name;
+  if (state.tab === "add") return renderAdd();
+  if (state.tab === "list") return renderList();
+  if (state.tab === "stats") return renderStats();
+  if (state.tab === "me") return renderMe();
+}
+
+/* ---------------- 记一笔 ---------------- */
+function catTree() { return state.meta.categories[state.form.direction] || {}; }
+/* 这里**不**给金额框 focus。手机上聚焦就等于弹键盘：
+   进入记一笔会一进来就弹、点分类 / 标记 / 归属（都是整页重渲染）会再弹一次，
+   而键盘正好盖住二级分类，用户得反复手动收起。想让键盘出来，只有用户自己点金额框。
+   （2026-10-27 之前这里是无条件 amt.focus()，别再加回去，包括保存成功之后。） */
+function renderAdd() {
+  const f = state.form, tree = catTree();
+  if (!tree[f.cat_parent]) {
+    f.cat_parent = Object.keys(tree)[0];
+    f.category = tree[f.cat_parent][0];
+  }
+  const parents = Object.keys(tree);
+  const subs = tree[f.cat_parent] || [];
+  const users = ownerList();
+  const curCol = catColor(f.cat_parent, f.direction);
+  const subsidySubs = ((state.meta.categories.income || {})["补贴"]) || [];
+  if (!users.some(u => u.id === f.owner_id)) f.owner_id = state.me.id;
+
+  $("#view").innerHTML = `
+    <div class="ai-box">
+      <input id="ai-input" placeholder="AI：写一句话，或拍张小票" value="${esc(state.aiText)}" ${state.meta.ai_enabled ? "" : "disabled"}>
+      <button class="ai-pic" id="ai-pic" title="拍照 / 选图" ${state.meta.ai_enabled ? "" : "disabled"}>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5A2.5 2.5 0 0 1 5.5 6h1.7l1.2-1.7a1.5 1.5 0 0 1 1.2-.7h4.8a1.5 1.5 0 0 1 1.2.7L16.8 6h1.7A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5z"/><circle cx="12" cy="13" r="3.4"/></svg>
+      </button>
+      <button id="ai-btn" ${state.meta.ai_enabled ? "" : "disabled"}>识别</button>
+    </div>
+    <input type="file" id="ai-file" accept="image/*" hidden>
+    ${state.aiImage ? `<div class="ai-shot"><img src="${esc(state.aiImage)}" alt="待识别的小票"><i id="ai-clear">×</i></div>` : ""}
+    ${state.aiHint ? `<div class="ai-hint">识别到：${esc(state.aiHint)}</div>` : ""}
+
+    <div class="seg">
+      ${[["expense", "支出"], ["income", "收入"], ["refund", "退款 / 报销"]].map(([k, n]) =>
+        `<button data-dir="${k}" class="${f.direction === k ? "on" : ""}">${n}</button>`).join("")}
+    </div>
+
+    ${f.direction === "refund" ? `
+    <div class="seg" style="margin-top:8px">
+      ${[["refund", "退货退款"], ["reimb", "报销到账"]].map(([k, n]) =>
+        `<button data-kind="${k}" class="${(state.offsetKind || "refund") === k ? "on" : ""}">${n}</button>`).join("")}
+    </div>` : ""}
+
+    <div class="amount-wrap">
+      <span class="cur">¥</span>
+      <input id="amount" inputmode="decimal" placeholder="0.00" value="${esc(state.amountText || "")}">
+    </div>
+
+    ${f.direction === "refund" && state.offsetKind === "reimb" ? "" : `
+    <div class="card">
+      <h3>分类 · ${esc(f.cat_parent)}</h3>
+      <div class="chips" id="parents">
+        ${parents.map(p => `<button class="chip cchip ${p === f.cat_parent ? "on" : ""}" data-p="${esc(p)}" style="${chipVars(catColor(p, f.direction))}">${esc(p)}</button>`).join("")}
+      </div>
+      <div class="chips" style="margin-top:9px">
+        ${subs.map(s => `<button class="chip sub ${s === f.category ? "on" : ""}" data-c="${esc(s)}" style="${chipVars(curCol)}">${esc(s)}</button>`).join("")}
+      </div>
+    </div>`}
+
+    ${f.direction === "expense" ? `
+    <div class="card">
+      <h3>标记</h3>
+      <div class="toggles">
+        <button class="tg ${f.shared ? "on" : ""}" id="tg-shared"><span class="dot"></span><span>共同支出</span></button>
+        <button class="tg ${f.reimb_pending ? "on" : ""}" id="tg-pending"><span class="dot"></span><span>待报销</span></button>
+        <button class="tg ${f.pending_use ? "on" : ""}" id="tg-voucher"><span class="dot"></span><span>待用券</span></button>
+        <button class="tg ${f.travel ? "on" : ""}" id="tg-travel"><span class="dot"></span><span>旅行</span></button>
+      </div>
+      <div class="hint" style="margin-top:8px">团购/预付的券还没用就选「待用券」，之后在明细里点<span style="white-space:nowrap">「处理」</span>核销或退掉。<br>出门在外的吃住行打开「旅行」，分类照实记，之后在明细里筛「旅行」就能看这趟一共花多少。</div>
+    </div>` : ""}
+
+    ${f.direction === "refund" ? `
+    <div class="card">
+      <h3>${state.offsetKind === "reimb" ? "报销哪几笔支出 · 可多选" : "冲抵哪一笔支出"}</h3>
+      <div class="chips" id="targets"><span class="hint">匹配中…</span></div>
+      <div class="hint" style="margin-top:8px" id="target-hint"></div>
+      ${state.offsetKind === "reimb" ? "" : `
+      <button class="tgt-more" id="tgt-more">找不到？搜更早的账单</button>
+      <div class="tgt-search" id="tgt-search" hidden>
+        <input id="tgt-q" placeholder="关键词或金额，如 手机壳 / 68">
+        <div class="chips" id="tgt-results" style="margin-top:9px"></div>
+      </div>`}
+    </div>` : ""}
+
+    ${f.direction === "refund" && state.offsetKind === "reimb" ? `
+    <div class="card">
+      <h3>这笔到账里有多少是差补</h3>
+      <div class="field"><label>差补</label>
+        <input id="subsidy" inputmode="decimal" placeholder="不填就是全额报销，没有差补" value="${esc(state.subsidyText || "")}">
+      </div>
+      ${subsidySubs.length ? `<div class="chips" id="subsidy-cats" style="margin-top:9px;display:${parseAmount(state.subsidyText) ? "flex" : "none"}">
+        ${subsidySubs.map(s => `<button class="chip sub ${(state.subsidyCat || subsidySubs[0]) === s ? "on" : ""}" data-sc="${esc(s)}">${esc(s)}</button>`).join("")}
+      </div>` : ""}
+      <div class="hint" style="margin-top:8px" id="subsidy-hint"></div>
+    </div>` : ""}
+
+    <div class="card">
+      <h3>细节</h3>
+      <div class="field"><label>日期</label><input type="date" id="tx-date" value="${esc(state.dateText || today())}"></div>
+      <div class="field"><label>归属</label>
+        <div class="chips" id="owners">
+          ${users.map(u => { const col = ownerColor(u.id); return `<button class="chip pchip ${u.id === f.owner_id ? "on" : ""}" data-owner="${esc(u.id)}" style="${chipVars(col)}">${esc(u.id === state.me.id ? "我 · " + u.display_name : u.display_name)}</button>`; }).join("")}
+        </div>
+      </div>
+      <div class="field"><label>备注</label><input id="note" maxlength="100" placeholder="可选" value="${esc(state.noteText || "")}"></div>
+    </div>
+
+    <button class="btn" id="save">记这笔</button>
+    <div style="height:10px"></div>`;
+
+  const amt = $("#amount");
+  bindAmountInput(amt);          // 必须排在 oninput 之前：清洗要先于「记状态」跑
+  amt.oninput = () => {
+    state.amountText = amt.value;
+    if (state.form.direction !== "refund") return;
+    if (state.offsetKind === "reimb") {
+      // 报销候选跟金额无关（只认「待报销」标记），不用重发请求；
+      // 但金额一变，默认勾选就该重判断（填够→自动全选，改小→退回不选），
+      // 勾选真变了才重画候选，别无谓地重建按钮
+      const before = state.reimbSel.join(",");
+      autoSelectReimb();
+      if (state.reimbSel.join(",") !== before) renderReimbTargets(state.targetItems || []);
+      autoFillSubsidy();
+      updateSubsidyHint();
+      updateTargetHint(state.targetItems || []);
+    } else {
+      scheduleTargets();
+    }
+  };
+  amt.onkeydown = e => { if (e.key === "Enter") saveTx(); };
+
+  // 差补：金额 + 子类。默认按「到账 − 已选合计」自动回填，填 0 或不填 = 全额报销
+  const subIn = $("#subsidy");
+  if (subIn) {
+    bindAmountInput(subIn);
+    subIn.oninput = () => {
+      state.subsidyText = subIn.value;
+      // 自己改过就退出自动模式；改回去跟自动值一样（或清空）则继续算自动
+      state.subsidyManual = parseAmount(subIn.value) !== autoSubsidyCents();
+      refreshSubsidyCat();
+      updateSubsidyHint();
+      updateTargetHint(state.targetItems || []);
+    };
+    // 「恢复自动」按钮是 hint 里动态生成的，交给容器做事件委托（每次渲染重建容器，不会重复绑）
+    const sh = $("#subsidy-hint");
+    if (sh) sh.addEventListener("click", e => {
+      if (!e.target || e.target.id !== "subsidy-auto") return;
+      state.subsidyManual = false;
+      autoFillSubsidy();
+      updateSubsidyHint();
+      updateTargetHint(state.targetItems || []);
+    });
+    autoFillSubsidy();
+    updateSubsidyHint();
+  }
+  $("#view").querySelectorAll("[data-sc]").forEach(b => b.onclick = () => {
+    state.subsidyCat = b.dataset.sc; renderAdd();
+  });
+
+  $("#view").querySelectorAll("[data-dir]").forEach(b => b.onclick = () => {
+    f.direction = b.dataset.dir; f.cat_parent = ""; f.category = "";
+    state.target = null; state.pinned = null; state.targetSig = "";
+    state.reimbSel = []; state.reimbTouched = false;
+    state.subsidyText = ""; state.subsidyCat = ""; state.subsidyManual = false;
+    if (f.direction !== "refund") state.offsetKind = "refund";
+    renderAdd();
+  });
+  // 「退款/报销」内部分型：换类型要重新匹配候选（报销只找标了「待报销」的支出）
+  $("#view").querySelectorAll("[data-kind]").forEach(b => b.onclick = () => {
+    state.offsetKind = b.dataset.kind;
+    state.target = null; state.pinned = null; state.targetSig = "";
+    state.reimbSel = []; state.reimbTouched = false;
+    state.subsidyText = ""; state.subsidyCat = ""; state.subsidyManual = false;
+    renderAdd();
+  });
+  $("#view").querySelectorAll("[data-p]").forEach(b => b.onclick = () => {
+    f.cat_parent = b.dataset.p; f.category = tree[f.cat_parent][0]; renderAdd();
+  });
+  $("#view").querySelectorAll("[data-c]").forEach(b => b.onclick = () => {
+    f.category = b.dataset.c; renderAdd();
+  });
+  $("#view").querySelectorAll("[data-owner]").forEach(b => b.onclick = () => {
+    f.owner_id = +b.dataset.owner; renderAdd();
+  });
+  // 标记卡只在支出方向下渲染，收入/退款时这些节点不存在，必须判空
+  const tg = (sel, fn) => { const el = $(sel); if (el) el.onclick = fn; };
+  tg("#tg-shared", () => { f.shared = !f.shared; renderAdd(); });
+  tg("#tg-pending", () => { f.reimb_pending = !f.reimb_pending; renderAdd(); });
+  tg("#tg-voucher", () => { f.pending_use = !f.pending_use; renderAdd(); });
+  tg("#tg-travel", () => { f.travel = !f.travel; renderAdd(); });
+  $("#tx-date").onchange = e => { state.dateText = e.target.value; };
+  $("#note").oninput = e => {
+    state.noteText = e.target.value;
+    // 备注参与「备注关键词」匹配，改了也要重算
+    if (f.direction === "refund") scheduleTargets();
+  };
+  $("#save").onclick = saveTx;
+  const aiBtn = $("#ai-btn");
+  if (aiBtn) aiBtn.onclick = aiParse;
+  const aiInput = $("#ai-input");
+  if (aiInput) {
+    aiInput.oninput = () => { state.aiText = aiInput.value; };
+    aiInput.onkeydown = e => { if (e.key === "Enter") aiParse(); };
+  }
+  const aiPic = $("#ai-pic"), aiFile = $("#ai-file");
+  if (aiPic && aiFile) aiPic.onclick = () => aiFile.click();
+  if (aiFile) aiFile.onchange = async () => {
+    const file = aiFile.files && aiFile.files[0];
+    aiFile.value = "";                 // 清空后才允许重复选同一张
+    if (!file) return;
+    try {
+      state.aiImage = await shrinkImage(file);
+      state.aiHint = "";
+      renderAdd();                     // 缩略图要立刻出现，别等识别完
+      aiParse();                       // 选完图直接识别，手机上少点一次
+    } catch (e) { toast(e.message); }
+  };
+  const aiClear = $("#ai-clear");
+  if (aiClear) aiClear.onclick = () => { state.aiImage = ""; state.aiHint = ""; renderAdd(); };
+  const more = $("#tgt-more");
+  if (more) more.onclick = () => {
+    const box = $("#tgt-search");
+    box.hidden = !box.hidden;
+    more.textContent = box.hidden ? "找不到？搜更早的账单" : "收起搜索";
+    if (!box.hidden) $("#tgt-q").focus();
+  };
+  const q = $("#tgt-q");
+  if (q) {
+    q.oninput = () => { clearTimeout(searchTimer); searchTimer = setTimeout(searchTargets, 320); };
+    q.onkeydown = e => { if (e.key === "Enter") { clearTimeout(searchTimer); searchTargets(); } };
+  }
+  if (f.direction === "refund") loadTargets();
+}
+
+/* ---- 退款冲抵候选 ----
+   服务端按「同额 > 备注关键词 > 金额接近」排序，这里只负责预选、展示和交互。
+   state.target：null = 还没决定（会自动选最强候选）；"none" = 用户手点的不冲抵。 */
+let targetTimer = null, searchTimer = null, targetSeq = 0, searchSeq = 0;
+function scheduleTargets() {
+  clearTimeout(targetTimer);
+  targetTimer = setTimeout(loadTargets, 320);
+}
+/* 金额 / 归属人 / 备注任一变化都算「换了一笔」，旧的冲抵选择必须作废 */
+function targetSig() {
+  const amt = ($("#amount") || {}).value || "";
+  const note = ($("#note") || {}).value || "";
+  return `${amt}|${state.form.owner_id || ""}|${note}`;
+}
+const MATCH_TAG = {
+  same: ["同额", "same"],
+  kw: ["备注对得上", "kw"],
+  near: ["", "near"],
+};
+
+/* 报销候选的默认勾选规则：**只有到账金额能覆盖全部候选时才自动全选**。
+
+   早先是「拿到候选就无条件全选」，于是还没填金额（0.00）时两笔待报销就已经是
+   「已选」，而底部提示写着「先填到账金额，再勾选要冲抵的支出」——界面和行为互相
+   打脸，用户会以为系统擅自匹配了支出。金额没填就无从判断这笔到账要冲抵什么，
+   这时一律先不选。
+
+   用户自己点过候选（reimbTouched）之后，这套规则永久退出，不再覆盖他的选择。 */
+function autoSelectReimb() {
+  if (state.reimbTouched) return;
+  const items = state.targetItems || [];
+  const cents = parseAmount(($("#amount") || {}).value) || 0;
+  const total = items.reduce((a, t) => a + t.remain_cents, 0);
+  state.reimbSel = (cents > 0 && total > 0 && total <= cents)
+    ? items.map(t => t.id) : [];
+}
+
+/* 报销候选：多选。一次到账往往摊到好几笔支出上，单选根本表达不了。
+   能全额覆盖时默认全选（多数时候就是「这几笔一起报」），看着合计取消不该报的，
+   比一笔一笔点快；覆盖不了就得自己挑，系统不替你决定报哪几笔。
+   不预选单笔：退款点错一笔最多错几十块，报销点错一笔是整笔账错。 */
+function renderReimbTargets(items) {
+  const box = $("#targets");
+  if (!box) return;
+  if (!items.length) {
+    box.innerHTML = `<span class="hint">没有标记「待报销」的支出。报销只认这个标记——<br>到明细里给要报的那几笔打开「待报销」，再回来就能看到。</span>`;
+    return;
+  }
+  box.innerHTML = items.map(t => {
+    const on = state.reimbSel.includes(t.id);
+    const sub = [t.category, t.note].filter(Boolean).join(" · ");
+    return `<button class="chip tgt ${on ? "on" : ""}" data-rt="${t.id}">
+        <span class="tgt-main"><b>${t.tx_date.slice(5)}</b> ${esc(sub || "—")}</span>
+        <span class="tgt-side"><i class="tgt-tag ${on ? "kw" : "near"}">${on ? "已选" : "选它"}</i><b class="tgt-amt">剩 ${money(t.remain_cents)}</b></span>
+      </button>`;
+  }).join("");
+  box.querySelectorAll("[data-rt]").forEach(b => b.onclick = () => {
+    const id = +b.dataset.rt;
+    const i = state.reimbSel.indexOf(id);
+    if (i >= 0) state.reimbSel.splice(i, 1); else state.reimbSel.push(id);
+    state.reimbTouched = true;      // 用户自己动过，之后不再自动全选
+    renderReimbTargets(items);
+    autoFillSubsidy();              // 差补 = 到账 − 已选合计，勾选一变就重算
+    updateSubsidyHint();
+    updateTargetHint(items);
+  });
+}
+
+function renderTargets(items) {
+  const box = $("#targets");
+  if (!box) return;
+  state.targetItems = items;      // 合计/校验都要用，存一份
+  if (state.offsetKind === "reimb") return renderReimbTargets(items);
+  const picked = state.target;
+  const list = items.slice();
+  // 从搜索里挑的候选不在 30 天列表里，钉在最前面显示，否则看不到自己选了谁
+  if (state.pinned && !list.some(i => i.id === state.pinned.id)) list.unshift(state.pinned);
+  box.innerHTML = list.map(t => {
+    const [tagText, tagKind] = MATCH_TAG[t.match] || ["", "near"];
+    const tag = tagKind === "near"
+      ? (t.diff_cents > 0 ? `差 ${money(t.diff_cents)}` : "")
+      : tagText;
+    const sub = [t.category, t.note].filter(Boolean).join(" · ");
+    return `<button class="chip tgt ${String(picked) === String(t.id) ? "on" : ""}" data-t="${t.id}">
+        <span class="tgt-main"><b>${t.tx_date.slice(5)}</b> ${esc(sub || "—")}</span>
+        <span class="tgt-side">${tag ? `<i class="tgt-tag ${tagKind}">${tag}</i>` : ""}<b class="tgt-amt">剩 ${money(t.remain_cents)}</b></span>
+      </button>`;
+  }).join("")
+    + `<button class="chip tgt ${picked === "none" ? "on" : ""}" data-t="none">
+        <span class="tgt-main">不冲抵</span>
+        <span class="tgt-side"><i class="tgt-tag near">只减净支出</i></span>
+      </button>`;
+  box.querySelectorAll("[data-t]").forEach(b => b.onclick = () => {
+    state.target = b.dataset.t === "none" ? "none" : +b.dataset.t;
+    if (b.dataset.t !== "none") {
+      const hit = list.find(i => String(i.id) === b.dataset.t);
+      if (hit && !items.some(i => i.id === hit.id)) state.pinned = hit;
+    } else {
+      state.pinned = null;
+    }
+    renderTargets(items);
+    updateTargetHint(items);
+  });
+}
+
+function updateTargetHint(items) {
+  const hint = $("#target-hint");
+  if (!hint) return;
+  // 报销候选按「归属」过滤后为空时，服务端会放宽到全部人；这里说清楚，别让人以为串账了
+  const relaxed = state.targetsRelaxed ? "该归属人名下没有可报的支出，已放宽到全部人。" : "";
+  if (state.offsetKind === "reimb") return updateReimbHint(items, relaxed);
+  const picked = state.target;
+  if (!items.length && !state.pinned) {
+    hint.textContent = "近 30 天没有金额对得上的支出，这笔会记成无主退款；更早的账单可以搜。";
+    return;
+  }
+  if (picked === "none" || picked === null || picked === undefined) {
+    hint.textContent = relaxed + "不冲抵：只减少当月净支出，不影响分类占比。";
+    return;
+  }
+  const it = items.find(i => String(i.id) === String(picked)) || state.pinned;
+  if (!it) {
+    hint.textContent = relaxed + "选中后统计里会自动抵扣这笔支出。";
+  } else if (it.match === "same") {
+    hint.textContent = relaxed + `已关联 ${it.tx_date} 那笔，金额相同。不对点其他候选。`;
+  } else if (it.match === "kw") {
+    hint.textContent = relaxed + `已关联 ${it.tx_date} 那笔，备注对得上（原单 ${money(it.remain_cents)}）。不对点其他候选。`;
+  } else {
+    hint.textContent = relaxed + `已关联 ${it.tx_date} 那笔，比你填的多 ${money(it.diff_cents)}。不对点其他候选。`;
+  }
+}
+
+/* 报销模式的合计提示：已选 / 可冲抵 / 差额。
+   「可冲抵」= 到账金额 − 差补——差补那部分要记收入，不能拿来抵支出。 */
+function updateReimbHint(items, relaxed) {
+  const hint = $("#target-hint");
+  if (!hint) return;
+  const total = parseAmount(($("#amount") || {}).value) || 0;
+  const subsidy = parseAmount(($("#subsidy") || {}).value) || 0;
+  const can = Math.max(0, total - subsidy);
+  const sel = (state.targetItems || items || []).filter(t => state.reimbSel.includes(t.id));
+  const sum = sel.reduce((a, t) => a + t.remain_cents, 0);
+  if (!total) {
+    // 金额没填时不能只说「先填金额」——用户可能已经手动勾了几笔，得告诉他现在勾了啥
+    hint.innerHTML = sel.length
+      ? `已勾 <b>${sel.length}</b> 笔（合计 ${money(sum)}），还没填到账金额——填上才知道够不够。`
+      : "先填到账金额。下面是标了「待报销」的支出，金额够覆盖时才会自动勾上。";
+    return;
+  }
+  if (sum > can) {
+    hint.innerHTML = `已选 <b>${money(sum)}</b>，比可冲抵的 ${money(can)} 多 <b>${money(sum - can)}</b>`
+      + "——取消两笔，或者把差补调小。";
+    return;
+  }
+  if (sum === can) {
+    hint.textContent = (subsidy ? `已选 ${money(sum)} 正好抵完，另记差补 ${money(subsidy)} 进收入。`
+                               : `已选 ${money(sum)}，正好抵完。`) + " " + relaxed;
+    return;
+  }
+  hint.innerHTML = `已选 <b>${money(sum)}</b> / 可冲抵 ${money(can)}，还差 <b>${money(can - sum)}</b> 没认领`
+    + `——这部分会记成无主冲抵${subsidy ? "" : "；如果到账里有差补，填到上面那一栏"}。 ` + relaxed;
+}
+
+/* 差补的自动值 = 到账金额 − 已选支出合计。
+   算不出来（没填到账 / 一笔没选 / 已选就超过到账）一律 0——这时不填，差额落成无主冲抵。 */
+function autoSubsidyCents() {
+  const total = parseAmount(($("#amount") || {}).value) || 0;
+  const sel = (state.targetItems || []).filter(t => state.reimbSel.includes(t.id));
+  const sum = sel.reduce((a, t) => a + t.remain_cents, 0);
+  if (!total || !sum || sum >= total) return 0;
+  return total - sum;
+}
+
+/* 把自动值写进差补框（同时记进 state，整页重渲染不会丢）。
+   用户手动改过这一栏（state.subsidyManual）就不再覆盖——他知道自己出差几天。 */
+function autoFillSubsidy() {
+  const subIn = $("#subsidy");
+  if (!subIn || state.subsidyManual) return;
+  const auto = autoSubsidyCents();
+  const text = auto ? (auto / 100).toFixed(2) : "";
+  state.subsidyText = text;
+  if (subIn.value !== text) subIn.value = text;
+  refreshSubsidyCat();
+}
+
+/* 差补子类胶囊只在真填了金额时才露出来 */
+function refreshSubsidyCat() {
+  const cats = $("#subsidy-cats"), sub = $("#subsidy");
+  if (cats) cats.style.display = parseAmount(sub && sub.value) ? "flex" : "none";
+}
+
+/* 差补提示：说清这个数怎么来的、会去哪；不校验天数（系统不知道你出差几天） */
+function updateSubsidyHint() {
+  const el = $("#subsidy-hint");
+  if (!el) return;
+  const total = parseAmount(($("#amount") || {}).value) || 0;
+  const subsidy = parseAmount(($("#subsidy") || {}).value) || 0;
+  const auto = autoSubsidyCents();
+  if (total && subsidy >= total) {
+    el.textContent = "差补不能等于或超过到账金额——那就不是报销了，直接记一笔收入更清楚。";
+    return;
+  }
+  if (!subsidy) {
+    el.innerHTML = "差补是公司按天包干给的钱（你没垫过），记在「收入 · 补贴」；不填就是全额报销。"
+      + (auto ? ` 按已选合计应是 <b>${money(auto)}</b>，<button class="linkbtn" id="subsidy-auto">填上</button>` : "");
+    return;
+  }
+  el.innerHTML = `差补 <b>${money(subsidy)}</b> 记进「收入 · 补贴」，剩下的 <b>${money(Math.max(0, total - subsidy))}</b> 用来冲抵支出。`
+    + (state.subsidyManual
+      ? (auto && auto !== subsidy ? ` 按已选合计应是 <b>${money(auto)}</b>，<button class="linkbtn" id="subsidy-auto">改回自动</button>` : "")
+      : " 已按「到账 − 已选」自动算出，改这一栏就按你填的算。");
+}
+
+async function loadTargets() {
+  const box = $("#targets");
+  if (!box || state.form.direction !== "refund") return;
+  const isReimb = state.offsetKind === "reimb";
+  const cents = parseAmount(($("#amount") || {}).value) || 0;
+  const sig = targetSig();
+  if (sig !== state.targetSig) {          // 换了金额/人/备注 → 重新自动匹配
+    state.targetSig = sig;
+    if (!isReimb) {                       // 报销选的是哪几笔支出，与金额无关，不清空
+      state.target = null;
+      state.pinned = null;
+    }
+  }
+  if (!cents && !isReimb) {
+    renderTargets([]);
+    const hint = $("#target-hint");
+    if (hint) hint.textContent = "填上金额后自动匹配可冲抵的支出。";
+    return;
+  }
+  const seq = ++targetSeq;
+  box.innerHTML = `<span class="hint">匹配中…</span>`;
+  try {
+    const note = ($("#note") || {}).value || "";
+    const r = await api(`/refund-targets?amount_cents=${cents}`
+      + `&owner=${state.form.owner_id || ""}&note=${encodeURIComponent(note)}`
+      + (state.offsetKind === "reimb" ? "&kind=reimb" : ""));
+    if (seq !== targetSeq) return;        // 慢响应回来晚了，直接丢弃，别覆盖新结果
+    const items = r.items || [];
+    state.targetsRelaxed = !!r.relaxed;
+    state.targetItems = items;            // 差补要按这批候选算，先落地
+    if (isReimb) {
+      if (state.reimbTouched) {
+        const valid = new Set(items.map(i => i.id));
+        state.reimbSel = state.reimbSel.filter(id => valid.has(id));
+      } else {
+        // 没动过：按「到账能否覆盖全部候选」决定要不要默认全选，覆盖不了就先不选
+        autoSelectReimb();
+      }
+    } else if (state.target === null || state.target === undefined) {
+      state.target = r.auto || "none";    // 预选最强候选；并列时服务端给 null → 落回不冲抵
+    } else if (state.target !== "none"
+      && !items.some(i => i.id === state.target)
+      && !(state.pinned && state.pinned.id === state.target)) {
+      state.target = r.auto || "none";
+      state.pinned = null;
+    }
+    renderTargets(items);
+    autoFillSubsidy();                    // 默认全选后立刻把差额填进差补
+    updateSubsidyHint();
+    updateTargetHint(items);
+    renderSearch();
+  } catch (e) {
+    if (seq !== targetSeq) return;
+    box.innerHTML = `<span class="hint">${e.message}</span>`;
+  }
+}
+
+/* ---- 搜更早的账单（不限窗口，兜住 30 天外的原单）---- */
+let searchItems = [];
+function renderSearch() {
+  const box = $("#tgt-results");
+  if (!box) return;
+  const q = (($("#tgt-q") || {}).value || "").trim();
+  if (!q) { box.innerHTML = ""; return; }
+  const cents = parseAmount(($("#amount") || {}).value) || 0;
+  if (!searchItems.length) {
+    box.innerHTML = `<span class="hint">没搜到还有可退余额的支出。</span>`;
+    return;
+  }
+  box.innerHTML = searchItems.map(t => {
+    const bad = cents && t.remain_cents < cents;
+    const on = String(state.target) === String(t.id) ? "on" : "";
+    const sub = [t.tx_date, t.category, t.note, t.owner_name].filter(Boolean).join(" · ");
+    return `<button class="chip tgt ${on}" data-s="${t.id}" ${bad ? "data-bad=1" : ""}>
+        <span class="tgt-main">${esc(sub)}</span>
+        <span class="tgt-side">${bad
+          ? `<i class="tgt-tag bad">退不了</i>`
+          : `<i class="tgt-tag kw">选它</i>`}<b class="tgt-amt">剩 ${money(t.remain_cents)}</b></span>
+      </button>`;
+  }).join("");
+  box.querySelectorAll("[data-s]").forEach(b => b.onclick = () => {
+    if (b.dataset.bad) return toast("这笔剩的比退款金额还少");
+    const hit = searchItems.find(i => String(i.id) === b.dataset.s);
+    if (!hit) return;
+    state.target = hit.id;
+    state.pinned = hit;
+    loadTargets();
+  });
+}
+
+async function searchTargets() {
+  const box = $("#tgt-results");
+  if (!box || state.form.direction !== "refund") return;
+  const q = (($("#tgt-q") || {}).value || "").trim();
+  if (!q) { searchItems = []; box.innerHTML = ""; return; }
+  const seq = ++searchSeq;
+  box.innerHTML = `<span class="hint">搜索中…</span>`;
+  try {
+    // 纯数字当金额搜（±20%），其余当关键词（备注/分类）
+    const num = /^\d+(\.\d{1,2})?$/.test(q) ? Math.round(parseFloat(q) * 100) : null;
+    const url = num !== null
+      ? `/tx?direction=expense&min_cents=${Math.round(num * 0.8)}&max_cents=${Math.round(num * 1.2)}`
+      : `/tx?direction=expense&q=${encodeURIComponent(q)}`;
+    const r = await api(url);
+    if (seq !== searchSeq) return;
+    searchItems = (r.items || [])
+      .filter(t => t.remain_cents > 0 && t.direction === "expense")
+      .slice(0, 12);
+    renderSearch();
+  } catch (e) {
+    if (seq !== searchSeq) return;
+    box.innerHTML = `<span class="hint">${e.message}</span>`;
+  }
+}
+
+/* 图片在浏览器里先压：长边 1600 / JPEG 0.82。
+   不压的话手机原图 base64 后好几 MB，既撞 Caddy 的 8MB，也白烧 token
+   （模型按像素折算 token，1600 长边大约 1000~1600 token，够看清小票了）。 */
+function shrinkImage(file, maxSide = 1600, quality = 0.82) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\//.test(file.type || "")) return reject(new Error("请选择图片文件"));
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+      const cv = document.createElement("canvas");
+      cv.width = Math.max(1, Math.round(img.width * scale));
+      cv.height = Math.max(1, Math.round(img.height * scale));
+      cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+      resolve(cv.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("这张图读不出来")); };
+    img.src = url;
+  });
+}
+
+async function aiParse() {
+  const input = $("#ai-input");
+  const text = ((input && input.value) || state.aiText || "").trim();
+  const image = state.aiImage || "";
+  if (!text && !image) return toast("写一句话，或者拍张小票");
+  const btn = $("#ai-btn");
+  if (btn) { btn.disabled = true; btn.textContent = image ? "识图中" : "识别中"; }
+  try {
+    const r = await api("/ai/parse", { method: "POST", body: { text, image } });
+    const d = r.draft;
+    state.form.direction = d.direction;
+    state.form.cat_parent = d.cat_parent;
+    state.form.category = d.category;
+    state.form.shared = d.shared;
+    state.form.reimb_pending = !!d.reimb_pending;
+    state.form.pending_use = !!d.pending_use;
+    state.form.travel = !!d.travel;
+    state.target = null;
+    state.amountText = (d.amount_cents / 100).toFixed(2);
+    state.dateText = d.tx_date;
+    // 备注只认模型给的：以前是 `d.note || text`，模型没写备注就把整句原话塞进来，
+    // 于是「晚上吃饭160」的备注变成了「晚上吃饭160」——金额日期全都在别的字段里，纯冗余。
+    state.noteText = d.note || "";
+    state.aiText = text;
+    state.aiHint = d.ocr_hint || "";     // 识图时展示「读到了什么」，方便核对
+    renderAdd();
+    // 「已报销」不能由表单决定（只认到账记录），但也不能默默丢掉——
+    // 用户看到「识别为…」却不知道自己那句「已经报销了」被忽略了，会以为已经记上了
+    const ignored = d.reimbursed
+      ? "；「已报销」没填——它只能由一笔到账记录决定，记完这笔再去明细点「到账」" : "";
+    toast(`识别为：${d.cat_parent} · ${d.category} ${money(d.amount_cents)}${ignored}`);
+  } catch (e) { toast(e.message); }
+  finally {
+    // 成功时 renderAdd 已经换掉了按钮，这里改的是旧节点，无害
+    if (btn) { btn.disabled = false; btn.textContent = "识别"; }
+  }
+}
+
+async function saveTx() {
+  // 防重第一道：请求在途时，后面的点击和回车直接吞掉。
+  // 移动端双击、金额框 Enter 与按钮同时触发，都会走到这里。
+  if (state.saving) return;
+  const raw = ($("#amount").value || "").trim();
+  // 空值 / 全是 0 和「格式不对」要分开提示，否则用户不知道是被哪条挡住的
+  if (!raw || !/[1-9]/.test(raw)) return toast("请输入金额");
+  const cents = parseAmount(raw);
+  if (cents === null) return toast("单笔金额不能超过 100 万元");
+  // 日期清空后不能静默兜底成「今天」：那等于替用户记到了错误的日子上
+  const dateText = ($("#tx-date").value || "").trim();
+  if (!dateText) return toast("选个日期");
+  const f = state.form;
+  const isReimb = f.direction === "refund" && state.offsetKind === "reimb";
+
+  // 报销：一次到账摊多笔支出，其中可能有一部分是差补（公司白给的，记收入不冲抵）
+  let links = [];
+  let subsidy = 0;
+  if (isReimb) {
+    subsidy = parseAmount((($("#subsidy") || {}).value || "").trim()) || 0;
+    if (subsidy >= cents) return toast("差补不能等于或超过到账金额——那就不是报销了");
+    const items = state.targetItems || [];
+    links = items.filter(t => state.reimbSel.includes(t.id))
+                 .map(t => ({ parent_id: t.id, amount_cents: t.remain_cents }));
+    const sum = links.reduce((a, x) => a + x.amount_cents, 0);
+    if (sum + subsidy > cents) {
+      return toast(`已选 ${money(sum)} + 差补 ${money(subsidy)} 超过到账 ${money(cents)}`);
+    }
+  }
+  const linked = !isReimb && f.direction === "refund" && state.target && state.target !== "none";
+
+  // 回执卡要说清「记的是什么」，所以趁表单还没清空先把这几项拍下来
+  const snap = {
+    tx_date: dateText,
+    owner: ((ownerList().find(u => u.id === f.owner_id)) || {}).display_name || "",
+    note: ($("#note").value || "").trim(),
+    marks: [],
+  };
+  if (f.direction === "expense") {
+    if (f.shared) snap.marks.push("共同支出");
+    if (f.reimb_pending) snap.marks.push("待报销");
+    if (f.pending_use) snap.marks.push("待用券");
+    if (f.travel) snap.marks.push("旅行");
+  }
+
+  const payload = {
+    tx_date: snap.tx_date,
+    direction: f.direction, cat_parent: f.cat_parent, category: f.category,
+    amount_cents: cents, shared: f.shared,
+    reimb_pending: f.reimb_pending, pending_use: f.pending_use, travel: f.travel,
+    parent_id: linked ? state.target : null,
+    // 报销的分配走 links（多笔），差补单独一条 income 由服务端生成
+    links: links,
+    subsidy_cents: subsidy,
+    subsidy_category: state.subsidyCat || "",
+    owner_id: f.owner_id, note: snap.note,
+    // 「退款/报销」是同一个方向，靠这个字段区分这条冲的是退货还是回款
+    offset_kind: f.direction === "refund" ? (state.offsetKind || "refund") : "refund",
+    // 幂等键：同一次提交发了两遍（双击、断网重发）也只落一条账
+    client_token: state.formToken,
+  };
+
+  // 防重第二道：按钮进「保存中」并锁死，直到这次请求有确定结果
+  state.saving = true;
+  startBlocker();
+  const btn = $("#save");
+  if (btn) { btn.disabled = true; btn.textContent = "保存中…"; }
+  try {
+    // 断网/切网时结果未知，用同一个 token 自动重发一次：第一次若已落库，
+    // 这次会被服务端当重复拦下，回执照样显示「账上只有一笔」——用户拿到的是确定答案。
+    let r = null, lastErr = null;
+    for (let attempt = 0; attempt < 2 && !r; attempt++) {
+      try { r = await api("/tx", { method: "POST", body: payload }); }
+      catch (e) {
+        lastErr = e;
+        if (!e.network) break;                      // 业务校验失败，重发没有意义
+        if (attempt === 0) await new Promise(res => setTimeout(res, 700));
+      }
+    }
+    if (!r) {
+      stopBlocker();
+      toast(lastErr && lastErr.network
+        ? "网络中断，这笔可能已经记上——没记上再点一次也不会重复"
+        : ((lastErr && lastErr.message) || "请求失败"));
+      return;
+    }
+
+    // 这笔已经落库，换新键。不换的话下一笔会被服务端当成重复直接丢掉。
+    state.formToken = newToken();
+
+    const saved = {
+      id: r.id, income_id: r.income_id || null, duplicate: !!r.duplicate,
+      amount_cents: cents, direction: f.direction,
+      kind: f.direction === "refund" ? (isReimb ? "reimb" : "refund") : "",
+      cat_parent: isReimb ? "" : f.cat_parent,
+      category: isReimb ? "" : f.category,
+      tx_date: snap.tx_date, owner: snap.owner, note: snap.note, marks: snap.marks,
+      link_count: links.length, subsidy: subsidy, cleared: !!r.cleared, linked: !!linked,
+    };
+
+    state.amountText = ""; state.noteText = ""; state.dateText = today();
+    state.form.shared = false; state.form.reimb_pending = false; state.form.pending_use = false;
+    state.form.travel = false;
+    // 拍的小票和识别提示一起清掉：这一笔已经落库，图留着只会让下一笔误用
+    state.aiText = ""; state.aiImage = ""; state.aiHint = "";
+    state.target = null; state.pinned = null; state.targetSig = "";
+    state.reimbSel = []; state.reimbTouched = false;
+    state.subsidyText = ""; state.subsidyCat = ""; state.subsidyManual = false;
+    // 这里不聚焦金额框：下一个动作由抽屉里的选择决定，别替用户决定要不要弹键盘
+    renderAdd();
+    // 先撤遮罩再推抽屉。反过来的话两层会叠着闪一下，像出了什么岔子
+    stopBlocker();
+    openReceipt(saved);
+  } finally {
+    state.saving = false;
+    stopBlocker();
+    const b = $("#save");
+    if (b) { b.disabled = false; b.textContent = "记这笔"; }
+  }
+}
+
+/* ---------------- 提交：在途遮罩 + 结果抽屉 ---------------- */
+/* 遮罩是给「慢」用的，不是给「防重」用的——防重靠 state.saving 和 client_token 唯一索引，
+   那两条已经挡住了双击。这里只负责一件事：让用户知道「在忙」，并且别在忙的时候乱点。
+   350ms 内回来的请求不该看到遮罩，否则只是闪一下，比不闪更让人不安。 */
+const BL_DELAY = 350, BL_SLOW = 2500, BL_ESCAPE = 6000;
+let blT1 = 0, blT2 = 0, blT3 = 0;
+
+function startBlocker() {
+  stopBlocker();
+  blT1 = setTimeout(() => {
+    const b = $("#blocker"), t = $("#bl-text"), c = $("#bl-cancel");
+    if (!b) return;
+    if (t) t.textContent = "正在记…";
+    if (c) c.hidden = true;
+    b.classList.add("on");
+    blT2 = setTimeout(() => { if (t) t.textContent = "网络有点慢，还在等…"; },
+      BL_SLOW - BL_DELAY);
+    // 拖到 6 秒基本只剩「连上了但不回数据」这一种情况，放人走总比锁死强
+    blT3 = setTimeout(() => { if (c) c.hidden = false; }, BL_ESCAPE - BL_DELAY);
+  }, BL_DELAY);
+}
+
+function stopBlocker() {
+  clearTimeout(blT1); clearTimeout(blT2); clearTimeout(blT3);
+  const b = $("#blocker");
+  if (b) b.classList.remove("on");
+}
+
+/* 6 秒后点「先看看明细」：只解锁界面，请求本身不中断。
+   真落库了，回执照样会弹出来——用户要的是答案，不是被锁着等答案。 */
+function releaseBlocker() {
+  stopBlocker();
+  const t = $("#bl-text");
+  if (t) t.textContent = "正在记…";
+}
+
+/* 结果抽屉。为什么是抽屉而不是页顶卡片：卡片在文档流里，可见性取决于提交那一刻
+   手指停在哪（「记这笔」在最末尾，卡片插在最前面，等于看不见）。
+   模态与环境无关，滚到哪儿都躲不掉，而且逼用户做一个决定——这本身就是确认。 */
+function openReceipt(s) {
+  state.lastSaved = s;
+  const r = $("#rsp"), m = $("#rsp-mask");
+  if (!r || !m) return;
+
+  const sign = s.direction === "income" ? "+" : s.direction === "refund" ? "↩" : "−";
+  const color = s.direction === "income" ? "var(--income)"
+    : s.direction === "refund" ? "var(--refund)" : "var(--expense)";
+  const title = s.duplicate ? "已记上，账上只有一笔"
+    : s.direction === "expense" ? "已记上这笔支出"
+    : s.direction === "income" ? "已记上这笔收入"
+    : s.kind === "reimb" ? "已记下这笔报销到账" : "已记下这笔退款";
+  const dirLabel = s.direction === "expense" ? "支出"
+    : s.direction === "income" ? "收入"
+    : (s.kind === "reimb" ? "报销到账" : "退款");
+
+  const bits = [];
+  if (s.cat_parent) bits.push(s.cat_parent + " / " + s.category);
+  bits.push(s.tx_date);
+  if (s.owner) bits.push(s.owner);
+
+  const tags = [];
+  if (s.kind === "reimb") tags.push(s.link_count ? "冲抵 " + s.link_count + " 笔" : "没有冲抵原单");
+  if (s.subsidy) tags.push("差补 " + money(s.subsidy));
+  if (s.linked) tags.push(s.cleared ? "原单标记已清除" : "已冲抵原单");
+  (s.marks || []).forEach(x => tags.push(x));
+
+  r.innerHTML =
+    '<div class="rsp-hd">' +
+      '<span class="rsp-ic">✓</span>' +
+      '<span class="rsp-title">' + title + '</span>' +
+      '<button class="rsp-x" id="rsp-x" aria-label="关闭">×</button>' +
+    '</div>' +
+    '<div class="rsp-amt" style="color:' + color + '">' + sign + money(s.amount_cents) + '</div>' +
+    '<div class="rsp-meta">' + esc(dirLabel) + " · " + bits.map(esc).join(" · ") + '</div>' +
+    (s.note ? '<div class="rsp-note">' + esc(s.note) + '</div>' : "") +
+    (tags.length ? '<div class="rsp-tags">' + tags.map(x =>
+      '<span class="rsp-tag">' + esc(x) + '</span>').join("") + '</div>' : "") +
+    '<div class="rsp-act">' +
+      // 重复提交被拦下时不给撤销：那一条是之前就存在的，撤它容易误伤
+      (s.duplicate ? "" : '<button class="rsp-undo" id="rsp-undo">记错了</button>') +
+      '<button class="rsp-more" id="rsp-more">再记一笔</button>' +
+      '<button class="rsp-ok" id="rsp-ok">记完了</button>' +
+    '</div>';
+
+  $("#rsp-x").onclick = closeReceipt;
+  $("#rsp-ok").onclick = receiptDone;
+  $("#rsp-more").onclick = receiptContinue;
+  const u = $("#rsp-undo");
+  if (u) u.onclick = receiptUndo;
+
+  m.classList.add("on");
+  // 下一帧再加 on，否则 display 从 none 变 block 和 transform 落在同一帧，过渡会被跳过
+  requestAnimationFrame(() => r.classList.add("on"));
+}
+
+function closeReceipt() {
+  const r = $("#rsp"), m = $("#rsp-mask");
+  if (!r || !m) return;
+  r.classList.remove("on");
+  m.classList.remove("on");
+  // 等滑出动画走完再清内容，否则面板空着往下滑
+  setTimeout(() => { if (!r.classList.contains("on")) r.innerHTML = ""; }, 240);
+}
+
+/* 记完了：回到页面顶部。表单已在提交成功时清空，那里就是「新的一笔」的起点 */
+function receiptDone() {
+  closeReceipt();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+/* 再记一笔：分类、归属、日期都留着，下一笔真正要填的只有金额，直接送过去 */
+function receiptContinue() {
+  closeReceipt();
+  const a = $("#amount");
+  if (!a) return;
+  a.scrollIntoView({ block: "center" });
+  a.focus();
+}
+
+async function receiptUndo() {
+  const s = state.lastSaved;
+  if (!s) return;
+  const btn = $("#rsp-undo");
+  if (btn) { btn.disabled = true; btn.textContent = "撤销中…"; }
+  try {
+    await api("/tx/" + s.id, { method: "DELETE" });
+    // 报销到账会附带一条差补收入，撤销要一起撤，否则统计里留一笔孤零零的补贴
+    if (s.income_id) await api("/tx/" + s.income_id, { method: "DELETE" }).catch(() => {});
+    closeReceipt();
+    // 表单刚被清空过，把金额和备注放回去：撤销的下一步九成是改一改重记。
+    // 只回填这两项，分类/归属/日期本来就没动，不动它们就不会把用户后来的选择改掉。
+    state.amountText = (s.amount_cents / 100).toFixed(2);
+    state.noteText = s.note || "";
+    // 只在记账页重画：抽屉虽然切页就会关，但这里不跟着判断的话，
+    // 万一将来有别处调用，renderAdd 会把当前页整个盖掉
+    if (state.tab === "add") {
+      renderAdd();
+      const a = $("#amount");
+      if (a) { a.scrollIntoView({ block: "center" }); a.focus(); }
+    }
+    toast("已撤销，金额和备注放回表单了");
+  } catch (e) {
+    if (btn) { btn.disabled = false; btn.textContent = "记错了"; }
+    toast(e.message);
+  }
+}
+
+/* ---------------- 明细 ---------------- */
+const DIR_LABEL = { expense: "支出", income: "收入", refund: "退款 / 报销" };
+const MARK_LABEL = { shared: "共同支出", pending: "待报销", reimb: "已报销", voucher: "待用券", travel: "旅行", refunded: "有退款" };
+/* 标记胶囊按这个顺序摆；键名必须与 server.py 的 MARK_SQL 一一对应 */
+const MARK_KEYS = ["shared", "voucher", "pending", "reimb", "travel", "refunded"];
+
+/* mark / exclude 都是逗号分隔的标记键：mark 里的是「只要」（之间为「或」），
+   exclude 里的是「不要」（之间也是「或」，整体取反）。
+   反选就是同一个胶囊点第二下——不为排除单独摆一排，7 枚胶囊变 13 枚反而更难找。 */
+function markList(v) { return (v || "").split(",").filter(Boolean); }
+function markLabels(v, sep) { return markList(v).map(k => MARK_LABEL[k] || k).join(sep); }
+
+/* ---- 日期快捷区间：值就是一对 [start, end]，点胶囊时现算 ----
+   「近 N 月」＝**含本月在内的 N 个自然月**（起点是 N-1 个月前的 1 号）。
+   以前写 monthsAgo(12)，从 11 月往前推 12 个月落在去年 11-01，实际覆盖 13 个月，
+   标签说 12 却给了 13——月份边界必须和标签字面一致，否则用户没法用它对账。 */
+const DATE_PRESETS = [
+  ["30d", "近30天", () => [daysAgo(29), today()]],
+  ["3m", "近3月", () => [monthsAgo(2), today()]],
+  ["12m", "近12月", () => [monthsAgo(11), today()]],
+  ["year", "今年", () => [new Date().getFullYear() + "-01-01", today()]],
+];
+
+/* 从 start/end 反推该高亮哪枚胶囊（字符串反推不出「自定义」，所以兜底 custom） */
+function guessDateMode(f) {
+  if (f.scope === "all") return "all";
+  if (f.scope !== "range") return "month";
+  for (const [k, , calc] of DATE_PRESETS) {
+    const [s, e] = calc();
+    if (s === f.start && e === f.end) return k;
+  }
+  return "custom";
+}
+
+/* 区间文案。两个用途、两套规则，别再合回一个：
+   - 条件行要能核对：一律写完整日期，**跨年两端都带年份**。
+   - 顶部胶囊要省地方：命中某个预设就直接说预设名（「近12月」），
+     用户刚点的就是这个词，一眼能确认「我选的是这个」。
+   以前两处都用 slice(5) 砍掉年份：近 12 个月显示成「11-01 ~ 11-03」，
+   和「本月 1–3 号」长得一模一样，被当成筛选没生效（2026-11-03 用户反馈）。 */
+function filterRangeText() {
+  const f = state.filter;
+  if (f.scope !== "range" || (!f.start && !f.end)) return "";
+  if (!f.start || !f.end) return `${f.start || "最早"} ~ ${f.end || "今天"}`;
+  // 同一年只写月日就够分辨；跨年必须带年，否则就是上面那个坑
+  return f.start.slice(0, 4) === f.end.slice(0, 4)
+    ? `${f.start.slice(5)} ~ ${f.end.slice(5)}`
+    : `${f.start} ~ ${f.end}`;
+}
+
+/* 当前区间命中的预设名（「近12月」这种）；自定义返回空串 */
+function rangePresetName() {
+  const k = guessDateMode(state.filter);
+  const p = DATE_PRESETS.find(x => x[0] === k);
+  return p ? p[1] : "";
+}
+
+/* 顶部胶囊的文字：命中预设就用预设名，否则用区间 */
+function rangeChipText() {
+  const full = filterRangeText();
+  if (!full) return "";
+  const preset = rangePresetName();
+  if (preset) return preset;
+  // 自定义且跨年：不能只写月日（「11-01 ~ 11-03」那口坑），
+  // 但四位年份的完整区间在 390px 上会被省略号吃掉结尾，改用两位年份换长度
+  const f = state.filter;
+  if (f.start && f.end && f.start.slice(0, 4) !== f.end.slice(0, 4))
+    return `${f.start.slice(2)} ~ ${f.end.slice(2)}`;
+  return full;
+}
+
+/* 结果列表上方那行「共找到 N 笔，条件：…」，把生效条件串成人话 */
+function conditionText() {
+  const f = state.filter, bits = [];
+  const range = filterRangeText();
+  // 命中预设时把预设名也写上：条件行是唯一能逐字核对「选了多久」的地方
+  const preset = rangePresetName();
+  if (range) bits.push("日期 " + (preset ? `${preset} · ${range}` : range));
+  else if (f.scope === "all") bits.push("日期 不限");
+  if (f.cat_parent) bits.push(f.cat_parent);
+  if (f.direction) bits.push(DIR_LABEL[f.direction] || f.direction);
+  if (f.mark) bits.push(markLabels(f.mark, " 或 "));
+  if (markList(f.exclude).length) bits.push("排除 " + markLabels(f.exclude, "、"));
+  if (f.owner) {
+    const u = ownerList().find(x => String(x.id) === String(f.owner));
+    if (u) bits.push(u.display_name);
+  }
+  if (f.q.trim()) bits.push("关键词「" + f.q.trim() + "」");
+  if (f.min || f.max) bits.push(`金额 ${f.min || 0}–${f.max || "∞"} 元`);
+  return bits.join(" · ");
+}
+
+/* 关键词拆词：空格分隔、多个词 AND，与服务端 split() 保持同一套规则 */
+function activeWords() {
+  const q = state.filter.q.trim();
+  return q ? q.split(/\s+/).filter(Boolean) : [];
+}
+
+/* 纯数字词 → 分值，用于「金额整串高亮」；与服务端 word_to_cents 同一套规则 */
+function wordToCentsJS(w) {
+  const m = /^(\d{1,9})(?:\.(\d{1,2}))?$/.exec(w || "");
+  if (!m) return null;
+  return parseInt(m[1], 10) * 100 + parseInt((m[2] || "").padEnd(2, "0"), 10) || null;
+}
+
+/* 关键词高亮：先转义再插 <mark>，顺序绝不能反（反了就是把用户输入当 HTML 执行） */
+function hl(text, words) {
+  const safe = esc(text);
+  if (!safe || !words || !words.length) return safe;
+  const alts = words.slice()
+    .sort((a, b) => b.length - a.length)     // 长词优先，「三亚湾」不会被「三亚」先吃掉
+    .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .filter(Boolean);
+  if (!alts.length) return safe;
+  return safe.replace(new RegExp("(" + alts.join("|") + ")", "gi"), "<mark>$1</mark>");
+}
+
+function allParents() {  const out = [];
+  Object.values(state.meta.categories).forEach(tree =>
+    Object.keys(tree).forEach(p => { if (!out.includes(p)) out.push(p); }));
+  return out;
+}
+/* 明细排序：键名与服务端 TX_ORDERS 白名单一一对应，多传的键会被忽略 */
+const SORTS = [
+  ["date_desc", "日期 新→旧"],
+  ["date_asc", "日期 旧→新"],
+  ["amount_desc", "净额 高→低"],
+  ["amount_asc", "净额 低→高"],
+];
+const SORT_SHORT = { date_asc: "日期↑", amount_desc: "净额↓", amount_asc: "净额↑" };
+
+function filterCount() {
+  const f = state.filter;
+  return ["direction", "mark", "exclude", "owner", "cat_parent"].filter(k => f[k]).length
+    + (f.q.trim() ? 1 : 0) + ((f.min || f.max) ? 1 : 0)
+    + (f.scope === "range" ? 1 : 0);
+}
+function filterQuery() {
+  const f = state.filter, p = new URLSearchParams();
+  // 时间维度只能有一个来源：区间 > 月份 > 不限
+  if (f.scope === "range") {
+    if (f.start) p.set("start", f.start);
+    if (f.end) p.set("end", f.end);
+  } else if (f.scope === "month" && state.month) {
+    p.set("month", state.month);   // month 为空就是全部月份（统计页跨月指标跳进来时会这样）
+  }
+  if (f.direction) p.set("direction", f.direction);
+  if (f.mark) p.set("mark", f.mark);
+  if (f.exclude) p.set("exclude", f.exclude);
+  if (f.owner) p.set("owner", f.owner);
+  if (f.cat_parent) p.set("cat_parent", f.cat_parent);
+  if (f.q.trim()) p.set("q", f.q.trim());
+  // 金额区间同样走严格解析：以前「12abc」会被当成 12 去筛
+  const mn = parseAmount(f.min), mx = parseAmount(f.max);
+  if (mn) p.set("min_cents", mn);
+  if (mx) p.set("max_cents", mx);
+  if (state.sort !== "date_desc") p.set("sort", state.sort);
+  return p.toString();
+}
+
+async function renderList() {
+  // 时间维度只能有一个入口：设了日期区间就把月份框让出来，
+  // 否则「顶部写着 10 月、列表却是跨年结果」会让人完全分不清在看什么
+  const range = filterRangeText();
+  const chipText = rangeChipText();
+  // 月份为空（跨月累计跳进来）时也不摆空月份框——原生控件会显示成「----年-月」，像坏了
+  $("#view").innerHTML = `
+    <div class="month-pick">
+      ${range
+        ? `<button class="btn small ghost month-all" id="range-chip" title="${esc(range)}（点一下清掉日期区间）"><span class="rc-t">${esc(chipText)}</span><span class="rc-x">✕</span></button>`
+        : state.month
+          ? `<input type="month" id="month" value="${esc(state.month)}">`
+          : `<button class="btn small ghost month-all" id="month-all">全部月份 · 按月查看</button>`}
+      <button class="btn small ghost" id="filter-btn">筛选</button>
+      <button class="btn small ghost" id="sort-btn">排序</button>
+      <button class="btn small ghost" id="export-btn" title="按当前筛选导出为 CSV，Excel 可直接打开">导出</button>
+    </div>
+    <div id="filter-bar"></div>
+    <div id="loan-bar"></div>
+    <div id="list-sum"></div>
+    <div id="list-body"><div class="empty">加载中…</div></div>`;
+  const mi = $("#month");
+  if (mi) mi.onchange = e => { state.month = e.target.value; loadList(); };
+  const ma = $("#month-all");
+  if (ma) ma.onclick = () => { state.month = nowMonth(); renderList(); };
+  const rc = $("#range-chip");
+  if (rc) rc.onclick = () => {
+    state.filter = { ...state.filter, scope: "month", start: "", end: "" };
+    renderList();
+  };
+  $("#filter-btn").onclick = () => openFilter();
+  $("#sort-btn").onclick = () => openSort();
+  // 导出走和列表同一个 filterQuery()：用户在页面上看到什么，文件里就是什么。
+  // 用 location.href 而不是 fetch——要让浏览器按附件下载（服务端给了 Content-Disposition），
+  // fetch 拿到的是字符串，还得在内存里再拼一次 Blob，多此一举。
+  $("#export-btn").onclick = () => { location.href = "/api/export.csv?" + filterQuery(); };
+  renderFilterBar();
+  renderSortBtn();
+  loadLoans();
+  loadList();
+}
+
+/* ---------------- 借款台账 ----------------
+   独立于流水，不进任何统计，只是「别忘了谁还欠我钱」。
+   入口放在明细页顶部：翻明细就会看见，不占底栏。 */
+let loansCache = [], loansOpen = false;
+async function loadLoans() {
+  const box = $("#loan-bar");
+  if (!box) return;
+  try {
+    const r = await api("/loans");
+    loansCache = r.items || [];
+    const s = r.summary || { out_open: 0, in_open: 0, open_count: 0 };
+    const bits = [];
+    if (s.out_open) bits.push(`借出 ${money(s.out_open)}`);
+    if (s.in_open) bits.push(`借入 ${money(s.in_open)}`);
+    const hasOpen = s.open_count > 0;
+    box.innerHTML = `
+      <button class="loan-bar ${hasOpen ? "" : "empty"}" id="loan-toggle">
+        <span class="lb-left">
+          <span class="lb-title">借款${hasOpen ? "" : "台账"}</span>
+          <span class="lb-sub">${hasOpen ? bits.join(" · ") + " 未结" : "暂无未结清"}</span>
+        </span>
+        <span class="lb-right">${hasOpen ? s.open_count + " 笔 " : ""}${loansOpen ? "收起" : "展开"}</span>
+      </button>
+      <div class="loan-panel" id="loan-panel" ${loansOpen ? "" : "hidden"}></div>`;
+    $("#loan-toggle").onclick = () => {
+      loansOpen = !loansOpen;
+      const p = $("#loan-panel");
+      if (p) p.hidden = !loansOpen;
+      const right = $("#loan-toggle .lb-right");
+      if (right) right.textContent = (hasOpen ? s.open_count + " 笔 " : "") + (loansOpen ? "收起" : "展开");
+      if (loansOpen) renderLoans();
+    };
+    renderLoans();
+  } catch (e) {
+    box.innerHTML = `<div class="hint">${e.message}</div>`;
+  }
+}
+
+function renderLoans() {
+  const panel = $("#loan-panel");
+  if (!panel) return;
+  const list = loansCache;
+  panel.innerHTML = (list.length ? list.map(l => {
+    const dir = l.direction === "out" ? "借出" : "借入";
+    const settled = l.settled;
+    return `<div class="loan-row ${settled ? "settled" : ""}">
+        <span class="l-main">
+          <span class="l-t">${esc(l.counterparty)} · ${dir}${settled ? " · 已结清" : ""}</span>
+          <span class="l-s">${l.loan_date.slice(5)}${l.note ? " · " + esc(l.note) : ""}</span>
+        </span>
+        <span class="l-right">
+          <span class="l-amt">${money(l.remain_cents)}</span>
+          <button class="loan-act" data-loan="${l.id}">${settled ? "查看" : "记还款"}</button>
+        </span>
+      </div>`;
+  }).join("") : `<div class="hint">还没有借款记录。</div>`)
+    + `<div style="margin-top:10px"><button class="btn small ghost" id="loan-add">＋ 记一笔借款</button></div>`;
+  panel.querySelectorAll("[data-loan]").forEach(b => b.onclick = () => {
+    openLoanSheet(loansCache.find(l => String(l.id) === b.dataset.loan));
+  });
+  const add = $("#loan-add");
+  if (add) add.onclick = () => openLoanSheet(null);
+}
+
+function openLoanSheet(loan) {
+  const l = loan || { direction: "out", counterparty: "", amount_cents: 0,
+    repaid_cents: 0, loan_date: today(), note: "", owner_id: state.me.id };
+  const users = ownerList();
+  $("#mask").classList.add("on");
+  $("#sheet").classList.add("on");
+  $("#sheet").innerHTML = `
+    <h3>${loan ? "借款详情" : "记一笔借款"}</h3>
+    <div class="hint" style="margin-bottom:14px">借款不计入收支统计，只用来提醒别忘。</div>
+    <div class="f-group">
+      <div class="f-label">方向</div>
+      <div class="chips" id="l-dir">
+        <button class="chip ${l.direction === "out" ? "on" : ""}" data-d="out">借出（别人欠我）</button>
+        <button class="chip ${l.direction === "in" ? "on" : ""}" data-d="in">借入（我欠别人）</button>
+      </div>
+    </div>
+    <div class="f-group"><div class="f-label">对方</div>
+      <input id="l-who" maxlength="20" placeholder="如 朋友" value="${esc(l.counterparty)}"></div>
+    <div class="f-group"><div class="f-label">金额（元）</div>
+      <input id="l-amt" inputmode="decimal" placeholder="0.00" value="${esc(l.amount_cents ? (l.amount_cents / 100).toFixed(2) : "")}"></div>
+    ${loan ? `<div class="f-group"><div class="f-label">已还（元）</div>
+      <input id="l-repaid" inputmode="decimal" value="${esc((l.repaid_cents / 100).toFixed(2))}">
+      <button class="btn ghost small" id="l-settle" style="margin-top:8px">全部还清了</button></div>` : ""}
+    <div class="f-group"><div class="f-label">日期</div>
+      <input type="date" id="l-date" value="${esc(l.loan_date)}"></div>
+    <div class="f-group"><div class="f-label">谁借的</div>
+      <div class="chips" id="l-owner">
+        ${users.map(u => `<button class="chip pchip ${u.id === l.owner_id ? "on" : ""}" data-o="${u.id}" style="${chipVars(ownerColor(u.id))}">${esc(u.display_name)}</button>`).join("")}
+      </div></div>
+    <div class="f-group"><div class="f-label">备注</div>
+      <input id="l-note" maxlength="100" placeholder="可选" value="${esc(l.note)}"></div>
+    <div class="row" style="margin-top:18px">
+      <button class="btn ghost" id="l-cancel">取消</button>
+      <button class="btn" id="l-save">保存</button>
+    </div>
+    ${loan ? `<div style="height:10px"></div><button class="btn danger" id="l-del">删除这笔借款</button>` : ""}`;
+
+  let direction = l.direction, ownerId = l.owner_id;
+  $("#l-dir").querySelectorAll("[data-d]").forEach(b => b.onclick = () => {
+    direction = b.dataset.d;
+    $("#l-dir").querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+  });
+  $("#l-owner").querySelectorAll("[data-o]").forEach(b => b.onclick = () => {
+    ownerId = +b.dataset.o;
+    $("#l-owner").querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+  });
+  bindAmountInput($("#l-amt"));
+  bindAmountInput($("#l-repaid"));
+  const settle = $("#l-settle");
+  if (settle) settle.onclick = () => { $("#l-repaid").value = $("#l-amt").value || "0"; };
+  $("#l-cancel").onclick = closeSheet;
+  $("#l-save").onclick = () => withBusy($("#l-save"), async () => {
+    const cents = parseAmount($("#l-amt").value);
+    if (!cents) return toast("请输入借款金额");
+    if (!$("#l-who").value.trim()) return toast("请填对方");
+    const body = {
+      direction, counterparty: $("#l-who").value.trim(), amount_cents: cents,
+      loan_date: $("#l-date").value || today(), note: $("#l-note").value,
+      owner_id: ownerId,
+    };
+    if (loan) body.repaid_cents = parseAmount($("#l-repaid").value) || 0;
+    try {
+      await api(loan ? `/loans/${loan.id}` : "/loans",
+        { method: loan ? "PATCH" : "POST", body });
+      closeSheet(); toast(loan ? "已保存" : "已记下"); loadLoans();
+    } catch (e) { toast(e.message); }
+  });
+  const del = $("#l-del");
+  if (del) del.onclick = async () => {
+    if (!confirm("删除这笔借款？")) return;
+    try { await api(`/loans/${loan.id}`, { method: "DELETE" }); closeSheet(); toast("已删除"); loadLoans(); }
+    catch (e) { toast(e.message); }
+  };
+}
+
+function renderFilterBar() {
+  const f = state.filter, parts = [];
+  if (f.direction) parts.push(["direction", DIR_LABEL[f.direction] || f.direction]);
+  if (f.mark) parts.push(["mark", markLabels(f.mark, " 或 ")]);
+  if (markList(f.exclude).length) parts.push(["exclude", "排除 " + markLabels(f.exclude, "、")]);
+  if (f.owner) {
+    const u = ownerList().find(x => String(x.id) === String(f.owner));
+    parts.push(["owner", "归属：" + (u ? u.display_name : f.owner)]);
+  }
+  if (f.cat_parent) parts.push(["cat_parent", f.cat_parent]);
+  if (f.q.trim()) parts.push(["q", "关键词：" + f.q.trim()]);
+  if (f.min || f.max) parts.push(["amount", `金额 ${f.min || 0}–${f.max || "∞"} 元`]);
+
+  const n = filterCount();
+  const btn = $("#filter-btn");
+  if (btn) btn.textContent = n ? `筛选 · ${n}` : "筛选";
+
+  const bar = $("#filter-bar");
+  if (!bar) return;
+  if (!parts.length) { bar.innerHTML = ""; return; }
+  bar.innerHTML = `<div class="chips" style="margin-bottom:12px">
+      ${parts.map(([k, label]) => `<button class="chip ${k === "exclude" ? "ex" : "on"}" data-clear="${esc(k)}">${esc(label)} ✕</button>`).join("")}
+      <button class="chip" data-clear="all">清除全部</button>
+    </div>`;
+  bar.querySelectorAll("[data-clear]").forEach(b => b.onclick = () => {
+    const k = b.dataset.clear;
+    if (k === "all") {
+      // 与筛选面板里的「重置」一致：条件、时间、排序全回默认
+      state.filter = { ...EMPTY_FILTER };
+      state.sort = "date_desc";
+      if (!state.month) state.month = nowMonth();
+      renderList();      // 顶部区间胶囊要换回月份框
+      return;
+    }
+    if (k === "amount") { state.filter.min = ""; state.filter.max = ""; }
+    else state.filter[k] = "";
+    renderFilterBar(); loadList();
+  });
+}
+
+/* 排序按钮只在偏离默认时显示当前顺序；文案必须短——
+   写成「排序 · 金额↓」会把月份框挤扁，甚至撑出屏幕 */
+function renderSortBtn() {
+  const btn = $("#sort-btn");
+  if (!btn) return;
+  btn.textContent = state.sort === "date_desc" ? "排序" : SORT_SHORT[state.sort];
+}
+
+function openSort() {
+  $("#mask").classList.add("on");
+  $("#sheet").classList.add("on");
+  $("#sheet").innerHTML = `
+    <h3>排序</h3>
+    <div class="f-group">
+      <div class="f-label">明细按什么排</div>
+      <div class="chips">
+        ${SORTS.map(([v, n]) => `<button class="chip ${state.sort === v ? "on" : ""}" data-s="${v}">${n}</button>`).join("")}
+      </div>
+    </div>
+    <div class="hint">排序和筛选同时生效：先按筛选条件挑出记录，再按这里排。
+      「净额」就是每行的大数字——支出已扣掉分给它的冲抵，退款和收入按负值参与排序
+      （所以在「低→高」里排最前面）。选「日期」时仍按天分组；按净额排会打散分组，每条自己带日期。</div>
+    <div class="row" style="margin-top:18px">
+      <button class="btn ghost" id="s-reset">恢复默认</button>
+      <button class="btn" id="s-close">完成</button>
+    </div>`;
+  // 点一下立刻生效、面板不关：方便来回切着看哪个顺序更好用
+  $("#sheet").querySelectorAll("[data-s]").forEach(b => b.onclick = () => {
+    state.sort = b.dataset.s;
+    $("#sheet").querySelectorAll("[data-s]").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+    renderSortBtn();
+    loadList();
+  });
+  $("#s-reset").onclick = () => {
+    state.sort = "date_desc";
+    $("#sheet").querySelectorAll("[data-s]").forEach(x => x.classList.toggle("on", x.dataset.s === "date_desc"));
+    renderSortBtn();
+    loadList();
+  };
+  $("#s-close").onclick = closeSheet;
+}
+
+const EMPTY_FILTER = { direction: "", mark: "", exclude: "", owner: "", cat_parent: "", q: "", min: "", max: "",
+  scope: "month", start: "", end: "" };
+
+function openFilter(draft) {
+  const f = { ...(draft || state.filter) };
+  const users = ownerList();
+
+  const group = (label, key, opts) => `
+    <div class="f-group">
+      <div class="f-label">${label}</div>
+      <div class="chips">
+        ${opts.map(([v, n]) => `<button class="chip ${f[key] === v ? "on" : ""}" data-f="${esc(key)}" data-v="${esc(v)}">${esc(n)}</button>`).join("")}
+      </div>
+    </div>`;
+
+  $("#mask").classList.add("on");
+  $("#sheet").classList.add("on");
+  const dmode0 = guessDateMode(f);
+  $("#sheet").innerHTML = `
+    <h3>筛选</h3>
+    <div class="f-group">
+      <div class="f-label">关键词</div>
+      <input id="f-q" placeholder="金额 / 备注 / 归属，空格分隔多个词"
+             value="${esc(f.q || "")}">
+      <div class="hint" style="margin-top:6px">搜「三亚 机票」＝两个词都要命中；输入数字会同时按<b>原额和净额</b>找。</div>
+    </div>
+    <div class="f-group">
+      <div class="f-label">日期区间</div>
+      <div class="chips" id="f-date">
+        <button class="chip ${dmode0 === "month" ? "on" : ""}" data-dm="month">跟随月份</button>
+        ${DATE_PRESETS.map(([k, n]) => `<button class="chip ${dmode0 === k ? "on" : ""}" data-dm="${k}">${n}</button>`).join("")}
+        <button class="chip ${dmode0 === "all" ? "on" : ""}" data-dm="all">全部</button>
+        <button class="chip ${dmode0 === "custom" ? "on" : ""}" data-dm="custom">自定义</button>
+      </div>
+      <div class="row" id="f-dates" style="margin-top:9px" ${dmode0 === "custom" ? "" : "hidden"}>
+        <input type="date" id="f-start" value="${esc(f.start || "")}">
+        <span class="hint">—</span>
+        <input type="date" id="f-end" value="${esc(f.end || "")}">
+      </div>
+    </div>
+    ${group("方向", "direction", [["", "全部"], ["expense", "支出"], ["income", "收入"], ["refund", "退款 / 报销"]])}
+    <div class="f-group">
+      <div class="f-label">标记</div>
+      <div class="chips" id="f-marks">
+        <button class="chip" data-mk="">全部</button>
+        ${MARK_KEYS.map(k => `<button class="chip" data-mk="${k}">${MARK_LABEL[k]}</button>`).join("")}
+      </div>
+      <div class="hint" style="margin-top:6px">
+        点一下＝只看这种，再点一下＝<b style="color:var(--danger)">排除</b>这种，第三下取消。
+        勾多种是「任一命中」；排除可以和「只要」同时用。
+      </div>
+    </div>
+    <div class="f-group">
+      <div class="f-label">归属</div>
+      <div class="chips">
+        <button class="chip ${f.owner === "" ? "on" : ""}" data-f="owner" data-v="">全部</button>
+        ${users.map(u => { const col = ownerColor(u.id); return `<button class="chip pchip ${String(f.owner) === String(u.id) ? "on" : ""}" data-f="owner" data-v="${esc(u.id)}" style="${chipVars(col)}">${esc(u.display_name)}</button>`; }).join("")}
+      </div>
+    </div>
+    <div class="f-group">
+      <div class="f-label">大类</div>
+      <div class="chips">
+        <button class="chip ${f.cat_parent === "" ? "on" : ""}" data-f="cat_parent" data-v="">全部</button>
+        ${allParents().map(p => `<button class="chip cchip ${f.cat_parent === p ? "on" : ""}" data-f="cat_parent" data-v="${esc(p)}" style="${chipVars(catColorAny(p))}">${esc(p)}</button>`).join("")}
+      </div>
+    </div>
+    <div class="f-group">
+      <div class="f-label">金额区间（原额，元）</div>
+      <div class="row">
+        <input id="f-min" inputmode="decimal" placeholder="最小" value="${esc(f.min || "")}">
+        <span class="hint">—</span>
+        <input id="f-max" inputmode="decimal" placeholder="最大" value="${esc(f.max || "")}">
+      </div>
+      <div class="hint" style="margin-top:6px">按<b>账单原本的金额</b>筛，不按冲抵后的净额——
+      想找「那笔花了 1000 多的」时，你记的是付款额。</div>
+    </div>
+    <div class="row" style="margin-top:18px">
+      <button class="btn ghost" id="f-reset">重置</button>
+      <button class="btn" id="f-apply">查看结果</button>
+    </div>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="f-close">关闭</button>`;
+
+  // 点选只改草稿，不影响列表
+  $("#sheet").querySelectorAll("[data-f]").forEach(b => b.onclick = () => {
+    f[b.dataset.f] = b.dataset.v;
+    b.parentElement.querySelectorAll(".chip").forEach(x => x.classList.remove("on"));
+    b.classList.add("on");
+  });
+
+  /* ---- 标记胶囊：三态切换（要 → 不要 → 取消）。
+     一次点击会牵动三枚胶囊（点「已报销」可能同时把它从 mark 里挪到 exclude），
+     所以整组重画，不做局部 classList 翻转。 ---- */
+  const paintMarks = () => {
+    const on = markList(f.mark), ex = markList(f.exclude);
+    $("#f-marks").querySelectorAll("[data-mk]").forEach(b => {
+      const k = b.dataset.mk;
+      b.classList.toggle("on", !!k && on.includes(k));
+      b.classList.toggle("ex", !!k && ex.includes(k));
+      if (!k) b.classList.toggle("on", !on.length && !ex.length);
+    });
+  };
+  $("#f-marks").querySelectorAll("[data-mk]").forEach(b => b.onclick = () => {
+    const k = b.dataset.mk;
+    if (!k) { f.mark = ""; f.exclude = ""; }
+    else {
+      const on = markList(f.mark), ex = markList(f.exclude);
+      // 先都摘掉，再按「原来是什么状态」落到下一个状态——顺序不能反，
+      // 否则「已勾 → 排除」会被自己刚加的那条挡住
+      f.mark = on.filter(x => x !== k).join(",");
+      f.exclude = ex.filter(x => x !== k).join(",");
+      if (!on.includes(k) && !ex.includes(k)) f.mark += (f.mark ? "," : "") + k;
+      else if (on.includes(k)) f.exclude += (f.exclude ? "," : "") + k;
+    }
+    paintMarks();
+  });
+  paintMarks();
+  // 金额区间也是金额输入框，同样只收数字和小数点
+  bindAmountInput($("#f-min"));
+  bindAmountInput($("#f-max"));
+
+  /* ---- 日期区间：常用范围点胶囊，自定义才展开两个日期框 ---- */
+  let dmode = dmode0;
+  const setMode = mode => {
+    dmode = mode;
+    if (mode === "month") { f.scope = "month"; f.start = ""; f.end = ""; }
+    else if (mode === "all") { f.scope = "all"; f.start = ""; f.end = ""; }
+    else if (mode === "custom") {
+      f.scope = "range";
+      if ($("#f-start")) $("#f-start").value = f.start || "";
+      if ($("#f-end")) $("#f-end").value = f.end || "";
+    } else {
+      const p = DATE_PRESETS.find(x => x[0] === mode);
+      if (!p) return;
+      const [s, e] = p[2]();
+      f.scope = "range"; f.start = s; f.end = e;
+    }
+    $("#f-date").querySelectorAll("[data-dm]").forEach(x =>
+      x.classList.toggle("on", x.dataset.dm === dmode));
+    const box = $("#f-dates");
+    if (box) box.hidden = dmode !== "custom";
+  };
+  $("#f-date").querySelectorAll("[data-dm]").forEach(b => b.onclick = () => setMode(b.dataset.dm));
+  const dStart = $("#f-start"), dEnd = $("#f-end");
+  if (dStart) dStart.onchange = () => { f.start = dStart.value; f.scope = "range"; };
+  if (dEnd) dEnd.onchange = () => { f.end = dEnd.value; f.scope = "range"; };
+
+  /* 一输入关键词就把范围放到近 12 个月（仅限「跟随月份」时），省得每次手动点。
+     用户自己选过区间就不动——不能把他设好的范围冲掉。胶囊会同步高亮，看得见。 */
+  const qEl = $("#f-q");
+  qEl.addEventListener("input", () => {
+    if (qEl.value.trim() && dmode === "month") setMode("12m");
+  });
+
+  $("#f-reset").onclick = () => {
+    state.sort = "date_desc";          // 重置连排序一起回默认
+    renderSortBtn();
+    openFilter(EMPTY_FILTER);
+  };
+  $("#f-apply").onclick = () => {
+    f.q = qEl.value;
+    f.min = $("#f-min").value.trim();
+    f.max = $("#f-max").value.trim();
+    if (f.scope === "range") {
+      if (dmode === "custom") {
+        f.start = dStart ? dStart.value : "";
+        f.end = dEnd ? dEnd.value : "";
+      }
+      if (f.start && f.end && f.start > f.end) [f.start, f.end] = [f.end, f.start];  // 起止填反自动纠正
+      if (!f.start && !f.end) f.scope = "all";      // 自定义但两端都空 = 不限时间
+    }
+    state.filter = { ...f };
+    closeSheet();
+    renderList();      // 顶部月份框 / 区间胶囊要跟着换，不能只刷列表
+  };
+  $("#f-close").onclick = closeSheet;
+}
+
+/* 标题 = 「一级 / 二级」的分类路径。一级浅灰小字、二级加粗，只让二级重，整屏才不会一坨加黑。
+   一级自己就是兜底大类（其他支出 / 其他收入）且二级也叫「其他」时，只写一级——
+   「其他支出」比「其他支出 / 其他」有信息量，也还能分清是钱进来还是出去。
+   报销冲抵行的分类是从原单继承的（支出树），照原样写会让人以为今天花了这笔钱，固定写「报销到账」。 */
+function txTitleHTML(t, w) {
+  if (t.direction === "refund" && t.offset_kind === "reimb") {
+    return `<i>退款 / </i><b>${hl("报销到账", w)}</b>`;
+  }
+  const parent = t.cat_parent || "", leaf = t.category || "";
+  if (!parent || parent === leaf) return `<b>${hl(parent || leaf, w)}</b>`;
+  if (leaf === "其他" && parent.startsWith("其他")) return `<b>${hl(parent, w)}</b>`;
+  return `<i>${hl(parent, w)} / </i><b>${hl(leaf, w)}</b>`;
+}
+
+/* 单条记录：按天分组和排序平铺两种视图共用。
+   withDate 为真时第二行带上日期——平铺时没有日期分组头，日期得自己带。
+   showOwner 为假时（整页只有一个人的账）金额下面不重复写归属人，省一列。
+   大数字是**净额**（原额 − 已退 − 已报），原额退成下面的小字；口径与统计页、
+   金额排序、导出 CSV 的「净额」列同一套，改一处就得四处一起改（见 docs §2.2）。 */
+function txRowHTML(t, withDate, showOwner) {
+  const refunded = t.refunded_cents || 0;
+  const reimb = t.reimb_cents || 0;
+  const offset = refunded + reimb;
+  /* 大数字是**净额**：支出扣掉分给它的冲抵；退款/收入没有冲抵，净额就是它自己的金额。
+     与统计页、金额排序、导出 CSV 的「净额(元)」是同一个数——四处口径必须一起改。 */
+  const net = t.direction === "expense"
+    ? (t.remain_cents == null ? Math.max(0, t.amount_cents - offset) : t.remain_cents)
+    : t.amount_cents;
+  const full = t.direction === "expense" && offset > 0 && net === 0;
+  const remain = net;                    // 「退」按钮：还能退多少
+  const badges = [
+    t.pending_use ? '<span class="badge voucher">待用券</span>' : '',
+    t.travel ? '<span class="badge travel">旅行</span>' : '',
+    t.shared ? '<span class="badge shared">共同</span>' : '',
+    t.reimb_pending ? '<span class="badge pending">待报销</span>' : '',
+    // 报销金额必须带出来：只写「已报销」的话，大数字和原额差多少、为什么差，全看不出来
+    t.reimbursed ? `<span class="badge reimb">${reimb > 0 ? "已报 " + money(reimb) : "已报销"}</span>` : '',
+    refunded > 0 ? `<span class="badge refunded">${refunded >= t.amount_cents ? "已退" : "退 " + money(refunded)}</span>` : '',
+  ].join("");
+  const head = withDate ? t.tx_date.slice(5) + " · " : "";
+  const w = activeWords();
+  /* 第二行只放备注；退款/报销行放「冲抵 哪天 哪一类」，原单分类写成完整路径才看得懂冲的是哪笔。
+     没有备注也没有徽标就整行不输出，高度靠 .body 的 min-height 撑齐，行不会一高一矮。 */
+  let sub;
+  if (t.direction === "refund") {
+    const kind = t.offset_kind === "reimb" ? "报销冲抵 " : "冲抵 ";
+    let link;
+    if (!t.parent_id) link = t.offset_kind === "reimb" ? "无主报销" : "无主退款";
+    // 摊在多笔上时只点名主原单会误导——标题那一格分类取的也只是「分配额最大的那笔」，
+    // 所以副标题直接说笔数，具体是哪几笔点进去看
+    else if ((t.link_count || 0) > 1) link = kind + t.link_count + " 笔支出";
+    else link = kind
+      + hl((t.parent_date || "").slice(5), w) + " "
+      + hl([t.parent_cat_parent, t.parent_category].filter(Boolean).join(" / "), w);
+    sub = [link, t.note ? hl(t.note, w) : ""].filter(Boolean).join(" · ");
+  } else {
+    sub = t.note ? hl(t.note, w) : "";
+  }
+  /* 金额高亮只在「整串相等」时点亮，搜 25 不该把 ¥125.00 里的 25 也点亮。
+     净额和原额任一命中都算——屏幕上出现过哪个数字，就得能搜到哪个。 */
+  const shown = money(net).slice(1);
+  const hitAmt = w.some(x => {
+    const c = wordToCentsJS(x);
+    return c && (c === net || c === t.amount_cents);
+  });
+  const amtHTML = hitAmt ? `<mark>${shown}</mark>` : shown;
+  const acts = [];
+  if (t.pending_use) acts.push(`<button class="quick" data-voucher="${t.id}">处理</button>`);
+  else if (t.direction === "expense" && remain > 0) acts.push(`<button class="quick muted" data-refund="${t.id}">退</button>`);
+  if (t.reimb_pending) acts.push(`<button class="quick" data-done="${t.id}">到账</button>`);
+  const dirCls = t.direction === "income" ? "dir-income"
+    : t.direction === "refund" ? "dir-refund" : "dir-expense";
+  const amtColor = full ? "var(--faint)"          // 全额冲抵完，0 不该再抢眼
+    : t.direction === "income" ? "var(--income)"
+    : t.direction === "refund" ? "var(--refund)" : "var(--expense)";
+  // 净额是 0 就不写负号：−0.00 看着像算错了，可全额冲抵本身是个正常状态
+  const sign = t.direction === "income" ? "+"
+    : t.direction === "refund" ? "↩"
+    : (net === 0 ? "" : "−");
+  return `
+      <div class="tx ${dirCls}" data-id="${t.id}">
+        <div class="body">
+          <div class="t1">${txTitleHTML(t, w)}</div>
+          ${(head || badges || sub) ? `<div class="t2">${head ? `<span class="date">${head}</span>` : ""}${badges}${sub ? `<span class="txt">${sub}</span>` : ""}</div>` : ""}
+        </div>
+        ${acts.join("")}
+        <div class="amt-col">
+          <div class="amt" style="color:${amtColor}">${sign}${amtHTML}</div>
+          ${offset > 0 ? `<div class="amt-sub">原 ${money(t.amount_cents)}</div>` : ""}
+          ${showOwner ? `<div class="own">${hl(t.owner_name || "", w)}</div>` : ""}
+        </div>
+      </div>`;
+}
+
+async function loadList() {
+  try {
+    const r = await api("/tx?" + filterQuery());
+    const box = $("#list-body");
+    const s = r.summary || { count: 0, expense: 0, income: 0, refund: 0 };
+    const cond = conditionText();
+    $("#list-sum").innerHTML = s.count ? `
+      <div class="sum-line">
+        <span>${cond ? "共找到 " : ""}${s.count} 笔</span>
+        ${(s.refund || s.reimb)
+          ? `<i class="net" title="支出扣掉冲抵后的真金白银；与统计页的「支出」同一个口径">净流出 ${money(s.expense - s.refund - s.reimb)}</i>
+             <i>原额支出 ${money(s.expense)}</i>`
+          : `<i>支出 ${money(s.expense)}</i>`}
+        ${s.income ? `<i>收入 ${money(s.income)}</i>` : ""}
+        ${s.refund ? `<i>退款 ${money(s.refund)}</i>` : ""}
+        ${s.reimb ? `<i>报销 ${money(s.reimb)}</i>` : ""}
+      </div>${cond ? `<div class="cond-line">条件：${esc(cond)}</div>` : ""}
+      ${(s.refund || s.reimb) ? `<div class="cond-line">
+        净流出 = 原额支出 − 退款 − 报销，<b>按记录日期归月</b>；统计页按原支出月归月，所以跨月冲抵时两页每月会差一笔（不是算错）。
+        每行的大数字已是冲抵后的净额，退款/报销另占一行——<b>别把两行相加</b>，钱已经从前面的原单里扣过了。
+      </div>` : ""}` : "";
+    if (!r.items.length) {
+      box.innerHTML = `<div class="empty">${filterCount() ? "没有符合条件的记录"
+        : (state.month ? "这个月还没有记录" : "还没有记录")}</div>`;
+      return;
+    }
+    // 整页只有一个人的账（多半是按归属筛过）就不重复写归属人，金额下面省一行
+    const showOwner = new Set(r.items.map(t => t.owner_id)).size > 1;
+    if (state.sort.startsWith("date")) {
+      const groups = {};
+      r.items.forEach(t => (groups[t.tx_date] = groups[t.tx_date] || []).push(t));
+      // 组的先后也跟着排序走：日期正序时最早的一天在最上面
+      const days = Object.keys(groups).sort();
+      if (state.sort === "date_desc") days.reverse();
+      box.innerHTML = days.map(day => {
+        const items = groups[day];
+        const exp = items.filter(t => t.direction === "expense").reduce((s, t) => s + t.amount_cents, 0);
+        // 小计也走净额，否则一天里「行加起来」和「头上的数」对不上
+        const netExp = items.filter(t => t.direction === "expense")
+          .reduce((s, t) => s + (t.remain_cents == null ? t.amount_cents : t.remain_cents), 0);
+        const label = netExp === exp ? "支出 " : "净支出 ";
+        return `<div class="day">
+          <div class="day-hd"><span>${day.slice(5)} · ${"日一二三四五六"[new Date(day).getDay()]}</span>
+            <span>${netExp ? label + money(netExp) : ""}</span></div>
+          ${items.map(t => txRowHTML(t, false, showOwner)).join("")}
+        </div>`;
+      }).join("");
+    } else {
+      // 金额排序与日期无关，按天分组会把顺序打断，这里平铺并让每条自带日期
+      box.innerHTML = r.items.map(t => txRowHTML(t, true, showOwner)).join("");
+    }
+    box.querySelectorAll(".tx").forEach(el => el.onclick = () => openEdit(+el.dataset.id, r.items));
+    box.querySelectorAll("[data-voucher]").forEach(btn => btn.onclick = e => {
+      e.stopPropagation();
+      openVoucher(r.items.find(x => x.id === +btn.dataset.voucher));
+    });
+    box.querySelectorAll("[data-refund]").forEach(btn => btn.onclick = e => {
+      e.stopPropagation();
+      openRefund(r.items.find(x => x.id === +btn.dataset.refund));
+    });
+    // 待报销一键到账：生成一条报销冲抵记录（不是改标记——钱真回来了，账面得跟着动）。
+    // 默认按剩余可冲抵全额；公司只报一部分时去编辑那条冲抵记录改金额。
+    box.querySelectorAll("[data-done]").forEach(btn => {
+      // 幂等键按「这个按钮」生成：连点、断网重发都复用它，只落一条；
+      // 列表刷新后按钮重画，token 自然换新，下次到账是另一件事
+      btn.dataset.token = newToken();
+      btn.onclick = async e => {
+        e.stopPropagation();
+        btn.disabled = true; btn.textContent = "…";
+        try {
+          const r = await api(`/tx/${btn.dataset.done}/reimburse`, {
+            method: "POST", body: { client_token: btn.dataset.token } });
+          toast(r.duplicate ? "这笔刚才已经到账过了，没有重复记"
+                            : `已报销 ${money(r.amount_cents)}，支出同步冲减`);
+          loadList();
+        } catch (err) {
+          btn.disabled = false; btn.textContent = "到账";
+          toast(err.network ? "网络中断，这笔可能已经到账——先刷新看一眼再决定" : err.message);
+        }
+      };
+    });
+    // summary.count 是 COUNT(*)，不受 LIMIT 影响：两者不等说明结果被截断了。
+    // 静默截断最坑——用户会以为「确实只有这些」，所以要明说。
+    if (s.count > r.items.length) {
+      box.insertAdjacentHTML("beforeend",
+        `<div class="hint" style="text-align:center;padding:14px 8px 4px">
+          只显示最近 ${r.items.length} 条（共 ${s.count} 笔）—— 缩小日期范围或再加个关键词
+        </div>`);
+    }
+  } catch (e) { $("#list-body").innerHTML = `<div class="empty">${e.message}</div>`; }
+}
+
+/* 编辑时的归属候选：真人在册 + 这条记录原本的归属（防止老数据归属人不在列表里） */
+function editOwners(t) {
+  const list = ownerList().slice();
+  if (t && !list.some(u => u.id === t.owner_id)) {
+    list.push({ id: t.owner_id, display_name: t.owner_name || "原记录归属" });
+  }
+  return list;
+}
+
+function openEdit(id, items) {
+  const t = items.find(x => x.id === id);
+  if (!t) return;
+  const tree = state.meta.categories[t.direction] || {};
+  // 冲抵记录（挂了原单的退款 / 报销到账）的方向、大类、子类都由原单决定：
+  // 服务端 PATCH 会无条件覆盖这三个字段，前端给了下拉也是白改。所以这里整段只读。
+  // 以前把继承来的分类塞进下拉、还能选中，改完保存「已保存」但没变化——2026-10-29 反馈的坑。
+  const linked = t.direction === "refund" && ((t.link_count || 0) > 0 || !!t.parent_id);
+  // 摊在多笔支出上的冲抵：金额一改就把各笔的钱冲散，只能去「冲抵分配」里逐笔调。
+  // 服务端也是这么拒的（PATCH 返回「请到冲抵分配里改金额」），所以这里不给输入框。
+  const multi = (t.link_count || 0) > 1;
+  const parents = Object.keys(tree);
+  if (t.cat_parent && !parents.includes(t.cat_parent)) parents.unshift(t.cat_parent);
+  const subs = (tree[t.cat_parent] || []).slice();
+  if (t.category && !subs.includes(t.category)) subs.unshift(t.category);
+  const refunded = t.refunded_cents || 0;
+  // 有「报销到账」记录时，已报销开关锁死：状态由那条记录决定，只能删记录来撤回。
+  // 否则会演变成「标记改成未报销、冲抵记录还挂着」——两边各说各的。
+  const reimbLocked = t.direction === "expense" && (t.reimb_cents || 0) > 0;
+  // 说明块里要点名是哪一天到账的，比「有一条记录」清楚得多（老数据可能没有日期，那就省略）
+  const reimbWhen = t.reimb_date ? "已于 " + t.reimb_date.slice(5) + " " : "";
+  $("#mask").classList.add("on");
+  $("#sheet").classList.add("on");
+  $("#sheet").innerHTML = `
+    <h3>编辑记录</h3>
+    <div class="field"><label>金额</label>
+      ${multi
+        ? `<div class="ro"><span>${money(t.amount_cents)}</span><span class="ro-tag">分摊 ${t.link_count} 笔，去「冲抵分配」调</span></div>`
+        : `<input id="e-amount" inputmode="decimal" value="${esc((t.amount_cents / 100).toFixed(2))}">`}</div>
+    <div class="field"><label>方向</label>
+      ${linked
+        ? `<div class="ro"><span>退款 / 报销</span><span class="ro-tag">${t.offset_kind === "reimb" ? "报销到账" : "退货退款"}</span></div>`
+        : `<select id="e-dir">${[["expense","支出"],["income","收入"],["refund","退款 / 报销"]]
+            .map(([k,n])=>`<option value="${esc(k)}" ${t.direction===k?"selected":""}>${esc(n)}</option>`).join("")}</select>`}</div>
+    ${linked ? `
+    <div class="field"><label>大类 / 子类</label>
+      <div class="ro"><span>${esc(t.cat_parent)} · <b>${esc(t.category)}</b></span><span class="ro-tag">跟随原消费</span></div></div>
+    <div class="hint" style="margin:-4px 0 12px">
+      ${multi
+        ? `这笔分摊在 ${t.link_count} 笔支出上：标题里的分类取<b>分配金额最大的那一笔</b>
+           （现在是 ${esc(t.cat_parent)} · ${esc(t.category)}），统计时按各笔自己的分类分别抵扣。
+           要换主原单，改分配金额就行。`
+        : `这笔挂在原消费上，分类跟着它走，统计时按原消费的类目抵扣。`}
+      要改分类，${t.parent_id ? '去<a class="linkbtn" id="e-go-parent">原单</a>里改' : "先解除冲抵"}。
+    </div>` : `
+    <div class="field"><label>大类</label>
+      <select id="e-parent">${parents.map(p=>`<option ${t.cat_parent===p?"selected":""}>${esc(p)}</option>`).join("")}</select></div>
+    <div class="field"><label>子类</label>
+      <select id="e-cat">${subs.map(s=>`<option ${t.category===s?"selected":""}>${esc(s)}</option>`).join("")}</select></div>`}
+    <div class="field"><label>日期</label><input type="date" id="e-date" value="${esc(t.tx_date)}"></div>
+    <div class="field"><label>归属</label>
+      ${t.parent_id
+        ? `<div class="ro"><span>${esc(t.owner_name || "")}</span><span class="ro-tag">跟随原账单</span></div>
+           <div class="hint" style="margin:6px 0 0">冲抵记录的归属跟着原账单走——否则明细按一个人显示、统计按另一个人抵扣。要改归属，去原账单里改。</div>`
+        : `<select id="e-owner">${editOwners(t).map(u=>`<option value="${esc(u.id)}" ${t.owner_id===u.id?"selected":""}>${esc(u.display_name)}</option>`).join("")}</select>`}</div>
+    <div class="field"><label>备注</label><input id="e-note" maxlength="100" value="${esc(t.note || "")}"></div>
+    ${reimbLocked ? `
+      <div class="lock-note">
+        <b>报销状态已锁定</b>
+        本笔的报销${reimbWhen}到账 ${money(t.reimb_cents)}，报销状态以该记录为准，不能在此修改。
+        如需变更，请先删除明细中的「报销到账」记录；删除后本笔恢复为「待报销」。
+      </div>` : ""}
+    <div class="toggles grid4" style="margin:14px 0">
+      <button class="tg ${t.shared?"on":""}" id="e-shared"><span class="dot"></span><span>共同支出</span></button>
+      ${t.direction === "expense" ? `<button class="tg ${t.pending_use?"on":""}" id="e-voucher"><span class="dot"></span><span>待用券</span></button>` : ""}
+      ${t.direction === "expense" ? `<button class="tg ${t.travel?"on":""}" id="e-travel"><span class="dot"></span><span>旅行</span></button>` : ""}
+      ${t.direction === "expense" ? `
+        <button class="tg ${t.reimb_pending?"on":""}" id="e-pending" ${reimbLocked?"disabled":""}><span class="dot"></span><span>待报销</span></button>
+        ${reimbLocked ? `<button class="tg on" disabled><span class="dot"></span><span>已报销（有到账记录）</span></button>` : ""}` : ""}
+    </div>
+    ${t.direction === "refund" ? `
+      <div class="refund-src">
+        <div class="rs-t">${(t.link_count || 0) > 1
+          ? (t.offset_kind === "reimb" ? "报销冲抵 " : "冲抵 ") + t.link_count + " 笔支出"
+          : (t.parent_id
+             ? (t.offset_kind === "reimb" ? "报销冲抵 " : "冲抵 ") + t.parent_date + " " + t.parent_cat_parent + " · " + t.parent_category + " " + money(t.parent_amount)
+             : (t.offset_kind === "reimb" ? "无主报销（没有关联支出）" : "无主退款（没有关联支出）"))}</div>
+        <div class="rs-s">${(t.link_count || 0) > 1
+          ? "统计里按各笔原消费的分类分别抵扣"
+          : (t.parent_id ? "统计里会抵扣这笔原消费" : "只减少当月净支出，不影响分类占比")}</div>
+      </div>
+      <button class="btn ghost small" id="e-links">冲抵分配${(t.link_count || 0) ? " · " + t.link_count + " 笔" : ""}</button>
+      <div style="height:10px"></div>
+      ${t.parent_id ? '<button class="btn ghost small" id="e-unlink">解除冲抵</button><div style="height:10px"></div>' : ""}
+    ` : ""}
+    ${t.direction === "expense" && (refunded > 0 || (t.reimb_cents || 0) > 0) ? `
+      <div class="card" style="margin:12px 0">
+        <h3>冲抵记录${refunded > 0 ? " · 已退 " + money(refunded) : ""}${(t.reimb_cents || 0) > 0 ? " · 已报 " + money(t.reimb_cents) : ""}</h3>
+        <div id="e-refund-list"><div class="hint">加载中…</div></div>
+      </div>` : ""}
+    <button class="btn" id="e-save">保存</button>
+    <div style="height:8px"></div>
+    <button class="btn danger" id="e-del">删除这条</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="e-cancel">取消</button>`;
+
+  const epSel = $("#e-parent");
+  if (epSel) epSel.onchange = e => {
+    const p = e.target.value;
+    const list = tree[p];
+    if (!list) return;              // 从原单继承来的分类，没有可选子类
+    $("#e-cat").innerHTML = list.map(s => `<option>${s}</option>`).join("");
+  };
+  // 冲抵记录改分类 = 改原单分类，这里直接把原单编辑页拉出来，省得自己去找那一天
+  const goParent = $("#e-go-parent");
+  if (goParent) goParent.onclick = async () => {
+    try {
+      const r = await api(`/tx?month=${(t.parent_date || t.tx_date).slice(0, 7)}`);
+      const it = (r.items || []).find(x => x.id === t.parent_id);
+      if (!it) return toast("原单不在这个月的列表里");
+      openEdit(it.id, r.items);
+    } catch (e) { toast(e.message); }
+  };
+  $("#e-shared").onclick = e => e.currentTarget.classList.toggle("on");
+  const ev = $("#e-voucher");
+  if (ev) ev.onclick = e => e.currentTarget.classList.toggle("on");
+  const et = $("#e-travel");
+  if (et) et.onclick = e => e.currentTarget.classList.toggle("on");
+  const ep = $("#e-pending");
+  const er = $("#e-reimb");
+  // 有报销到账记录时两个开关都是死的：状态由那条记录决定，改标记只会让两边打架。
+  // disabled 属性对 <button> 本身就能挡住 click，这里再判一次是防手滑点穿。
+  if (ep && !ep.disabled) ep.onclick = e => {
+    const on = e.currentTarget.classList.toggle("on");
+    if (on && er) er.classList.remove("on");
+  };
+  if (er && !er.disabled) er.onclick = e => {
+    const on = e.currentTarget.classList.toggle("on");
+    if (on && ep) ep.classList.remove("on");
+  };
+  const unlink = $("#e-unlink");
+  if (unlink) unlink.onclick = async () => {
+    if (!confirm("解除冲抵？这笔退款会变成无主退款。")) return;
+    try {
+      await api(`/tx/${t.id}`, { method: "PATCH", body: { parent_id: null } });
+      closeSheet(); toast("已解除冲抵"); loadList();
+    } catch (e) { toast(e.message); }
+  };
+  const linksBtn = $("#e-links");
+  if (linksBtn) linksBtn.onclick = () => openLinks(t);
+  if (t.direction === "expense" && (refunded > 0 || (t.reimb_cents || 0) > 0)) {
+    api(`/refunds?parent=${t.id}`).then(r => {
+      const box = $("#e-refund-list");
+      if (!box) return;
+      box.innerHTML = r.items.length ? r.items.map(x => `
+        <div class="refund-line">
+          <span>${esc(x.tx_date)} · ${x.offset_kind === "reimb" ? "报销" : "退货"} · ${esc(x.owner_name)}</span>
+          <span class="mono">↩ ${money(x.amount_cents)}</span>
+          <button class="a-del" data-del-offset="${x.id}">删除</button>
+        </div>`).join("") : '<div class="hint">没有明细</div>';
+      // 删掉一条冲抵 = 撤回那次退款/到账：原单的已退金额和报销状态都会跟着重算
+      box.querySelectorAll("[data-del-offset]").forEach(b => b.onclick = async () => {
+        if (!confirm("删除这条冲抵记录？原单的已退 / 已报销状态会跟着回退，"
+                     + "而且会改动这笔消费所在月份的净支出。")) return;
+        try {
+          await api(`/tx/${b.dataset.delOffset}`, { method: "DELETE" });
+          closeSheet(); toast("已删除，状态已回退"); loadList();
+        } catch (e) { toast(e.message); }
+      });
+    }).catch(() => {});
+  }
+  if ($("#e-amount")) bindAmountInput($("#e-amount"));
+  $("#e-cancel").onclick = closeSheet;
+  $("#e-save").onclick = () => withBusy($("#e-save"), async () => {
+    // 冲抵记录的方向 / 分类不随请求发：服务端本来就按原单覆盖，
+    // 发了只会让人以为前端在生效（实际被丢掉）。多笔分摊时金额也不发。
+    // 后端 B-02 会拒空日期，前端先拦：省一次网络往返，也让提示落在这个弹层上
+    const dateVal = ($("#e-date").value || "").trim();
+    if (!dateVal) return toast("选个日期");
+    const body = {
+      tx_date: dateVal,
+      shared: $("#e-shared").classList.contains("on"),
+      pending_use: $("#e-voucher") ? $("#e-voucher").classList.contains("on") : false,
+      travel: $("#e-travel") ? $("#e-travel").classList.contains("on") : false,
+      reimb_pending: $("#e-pending") ? $("#e-pending").classList.contains("on") : false,
+      // 「已报销」不发：它只由到账记录决定。以前这个开关可以手点，点完标记说已报、
+      // 净支出一分没减，月底对账才发现对不上（R14）。服务端也不再接受手填。
+      note: $("#e-note").value,
+    };
+    // 冲抵记录的归属由原单决定（服务端也无条件覆盖），不发这个字段，别让人以为发了就生效
+    if (!t.parent_id) body.owner_id = +$("#e-owner").value;
+    if (!multi) {
+      const amtCents = parseAmount($("#e-amount").value);
+      if (!amtCents) return toast("金额只能填数字，最多两位小数");
+      body.amount_cents = amtCents;
+    }
+    if (!linked) {
+      body.direction = $("#e-dir").value;
+      body.cat_parent = $("#e-parent").value;
+      body.category = $("#e-cat").value;
+    }
+    try {
+      await api(`/tx/${t.id}`, { method: "PATCH", body });
+      closeSheet(); toast("已保存"); loadList();
+    } catch (e) { toast(e.message); }
+  });
+  $("#e-del").onclick = async () => {
+    const warn = refunded > 0 ? `\n注意：这笔下面有 ${money(refunded)} 退款，删除后会变成无主退款。` : "";
+    if (!confirm("确定删除这条记录？" + warn)) return;
+    try { await api(`/tx/${t.id}`, { method: "DELETE" }); closeSheet(); toast("已删除"); loadList(); }
+    catch (e) { toast(e.message); }
+  };
+}
+
+/* ---- 冲抵分配：一条到账 / 退款摊在多笔支出上 ----
+   公司一次打回 900，对应的可能是 700+200 两张单。顺序接口由后端保证金额守恒，
+   这里只负责把改动攒在 state.alloc 里，点保存才整体提交（一次请求，不留中间态）。 */
+async function openLinks(t) {
+  let d;
+  try { d = await api(`/tx/${t.id}/links`); } catch (e) { return toast(e.message); }
+  state.allocOffset = t.id;
+  state.allocTotal = d.offset.amount_cents;
+  state.alloc = (d.items || []).map(x => ({
+    parent_id: x.parent_id, amount_cents: x.alloc_cents,
+    tx_date: x.tx_date, cat_parent: x.cat_parent, category: x.category,
+    note: x.note, parent_cents: x.parent_cents, max_cents: x.max_cents,
+  }));
+  renderLinks();
+}
+
+function closeLinks() {
+  $("#mask2").classList.remove("on");
+  $("#sheet2").classList.remove("on");
+  state.alloc = []; state.allocOffset = null;
+}
+
+const allocUsed = () => state.alloc.reduce((s, x) => s + x.amount_cents, 0);
+
+function renderLinks() {
+  const used = allocUsed();
+  const left = state.allocTotal - used;
+  $("#mask2").classList.add("on");
+  $("#sheet2").classList.add("on");
+  $("#sheet2").innerHTML = `
+    <h3>冲抵分配</h3>
+    <div class="alloc-sum">
+      <span>本笔 <b>${money(state.allocTotal)}</b></span>
+      <span>已分配 <b>${money(used)}</b></span>
+      <span>未分配 <b class="${left < 0 ? "over" : ""}">${money(left)}</b></span>
+    </div>
+    <div class="hint" style="margin-bottom:12px">未分配的部分按「无主」算在到账当月，不影响任何分类。</div>
+    ${state.alloc.length ? state.alloc.map((x, i) => `
+      <div class="alloc">
+        <div class="a-top">
+          <span class="a-cat">${x.tx_date.slice(5)} ${x.cat_parent} · ${x.category}</span>
+          <span class="hint">原额 ${money(x.parent_cents)}</span>
+        </div>
+        ${x.note ? `<div class="a-note">${esc(x.note)}</div>` : ""}
+        <div class="a-in">
+          <span class="hint">本次</span>
+          <input inputmode="decimal" data-alloc-in="${esc(i)}" value="${esc((x.amount_cents / 100).toFixed(2))}">
+          <button class="a-del" data-alloc-del="${i}">删除</button>
+        </div>
+        <div class="hint" style="margin-top:6px">这笔最多还能冲抵 ${money(x.max_cents)}</div>
+      </div>`).join("")
+      : '<div class="hint" style="margin-bottom:12px">还没有分配，这笔到账会按「无主」算在当月。</div>'}
+    <button class="btn ghost small" id="alloc-add">+ 添加一笔支出</button>
+    <div id="alloc-picker" hidden style="margin-top:10px"></div>
+    <div style="height:14px"></div>
+    <button class="btn" id="alloc-save">保存分配</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="alloc-close">返回</button>`;
+
+  $("#sheet2").querySelectorAll("[data-alloc-in]").forEach(inp => {
+    inp.onchange = () => {
+      const v = parseAmount(inp.value);
+      if (!v) { toast("金额只能填数字，最多两位小数"); return renderLinks(); }
+      state.alloc[+inp.dataset.allocIn].amount_cents = v;
+      renderLinks();
+    };
+  });
+  $("#sheet2").querySelectorAll("[data-alloc-del]").forEach(b => {
+    b.onclick = () => { state.alloc.splice(+b.dataset.allocDel, 1); renderLinks(); };
+  });
+  $("#alloc-close").onclick = closeLinks;
+  $("#mask2").onclick = closeLinks;
+  $("#alloc-add").onclick = async () => {
+    const picker = $("#alloc-picker");
+    picker.hidden = false;
+    picker.innerHTML = '<div class="hint">查找中…</div>';
+    const rest = Math.max(0, state.allocTotal - allocUsed());
+    try {
+      // 不带 kind：这里要的是「任何还有余额的支出」，不是「还没报过的支出」——
+      // 已经部分报销的单后面还得继续报，不能从候选里消失
+      const r = await api(`/refund-targets?amount_cents=${rest}`);
+      const taken = new Set(state.alloc.map(x => x.parent_id));
+      const items = (r.items || []).filter(x => !taken.has(x.id));
+      picker.innerHTML = items.length
+        ? `<div class="chips">${items.map(x => `<button class="chip" data-pick="${x.id}">${x.tx_date.slice(5)} ${x.category} ${money(x.remain_cents)}</button>`).join("")}</div>`
+        : '<div class="hint">近 30 天没有还能冲抵的支出。</div>';
+      picker.querySelectorAll("[data-pick]").forEach(b => b.onclick = () => {
+        const it = items.find(x => String(x.id) === b.dataset.pick);
+        if (!it) return;
+        const left = Math.max(0, state.allocTotal - allocUsed());
+        state.alloc.push({
+          parent_id: it.id,
+          // 优先用未分配余额；已经分满了就先按这笔的剩余额度放着，让人自己往下压
+          amount_cents: left > 0 ? Math.min(left, it.remain_cents) : it.remain_cents,
+          tx_date: it.tx_date, cat_parent: it.cat_parent, category: it.category,
+          note: it.note, parent_cents: it.amount_cents, max_cents: it.remain_cents,
+        });
+        renderLinks();
+      });
+    } catch (e) {
+      picker.innerHTML = `<div class="hint">${esc(e.message)}</div>`;
+    }
+  };
+  $("#alloc-save").onclick = () => withBusy($("#alloc-save"), async () => {
+    if (!state.alloc.length && !confirm("不给这笔到账分配支出？它会按「无主」算在当月。")) return;
+    try {
+      await api(`/tx/${state.allocOffset}/links`, {
+        method: "POST",
+        body: { items: state.alloc.map(x => ({ parent_id: x.parent_id, amount_cents: x.amount_cents })) },
+      });
+      closeLinks(); closeSheet(); toast("分配已保存"); loadList();
+    } catch (e) { toast(e.message); }
+  });
+}
+
+/* ---- 从某笔支出发起退款 ---- */
+function openRefund(t) {
+  if (!t) return;
+  const refunded = t.refunded_cents || 0;
+  const remain = t.remain_cents == null ? Math.max(0, t.amount_cents - refunded) : t.remain_cents;
+  if (remain <= 0) return toast("这笔已经全部退完了");
+  $("#mask").classList.add("on");
+  $("#sheet").classList.add("on");
+  $("#sheet").innerHTML = `
+    <h3>记一笔退款</h3>
+    <div class="refund-src">
+      <div class="rs-t">冲抵：${esc(t.tx_date)} ${esc(t.cat_parent)} · ${esc(t.category)}</div>
+      <div class="rs-s">原金额 ${money(t.amount_cents)}${refunded ? " · 已退 " + money(refunded) : ""} · 还能退 ${money(remain)}</div>
+    </div>
+    <div class="field"><label>退款金额</label><input id="r-amount" inputmode="decimal" value="${esc((remain / 100).toFixed(2))}"></div>
+    <div class="field"><label>到账日期</label><input type="date" id="r-date" value="${esc(today())}"></div>
+    <div class="field"><label>备注</label><input id="r-note" placeholder="可选，如「退一件」"></div>
+    <button class="btn" id="r-save">确认退款</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="r-cancel">取消</button>`;
+  bindAmountInput($("#r-amount"));
+  $("#r-cancel").onclick = closeSheet;
+  $("#r-save").onclick = () => withBusy($("#r-save"), async () => {
+    const cents = parseAmount($("#r-amount").value);
+    if (!cents) return toast("请输入退款金额");
+    if (cents > remain) return toast(`最多还能退 ${money(remain)}`);
+    try {
+      const r = await api("/tx", { method: "POST", body: {
+        tx_date: $("#r-date").value || today(), direction: "refund", parent_id: t.id,
+        amount_cents: cents, owner_id: t.owner_id, note: $("#r-note").value || "",
+      }});
+      closeSheet(); loadList();
+      toast(r.cleared ? "已全部退完，原单标记已清除" : "已记退款并冲抵");
+    } catch (e) { toast(e.message); }
+  });
+}
+
+/* ---- 待用券的处理入口 ---- */
+function openVoucher(t) {
+  if (!t) return;
+  $("#mask").classList.add("on");
+  $("#sheet").classList.add("on");
+  $("#sheet").innerHTML = `
+    <h3>这张券怎么处理了</h3>
+    <div class="refund-src">
+      <div class="rs-t">${esc(t.tx_date)} ${esc(t.cat_parent)} · ${esc(t.category)}</div>
+      <div class="rs-s">${money(t.amount_cents)}${t.note ? " · " + esc(t.note) : ""}</div>
+    </div>
+    <button class="btn" id="v-used">用掉了（核销）</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="v-refund">没用成，退掉了</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="v-void">过期作废，钱没退</button>
+    <div style="height:8px"></div>
+    <button class="btn ghost" id="v-cancel">取消</button>`;
+  const clear = async (msg) => {
+    try {
+      await api(`/tx/${t.id}`, { method: "PATCH", body: { pending_use: false } });
+      closeSheet(); toast(msg); loadList();
+    } catch (e) { toast(e.message); }
+  };
+  $("#v-used").onclick = () => clear("已核销，这笔算真实消费");
+  $("#v-void").onclick = () => {
+    if (confirm("确认这张券作废了？这笔钱会保留为支出。")) clear("已标记作废，支出保留");
+  };
+  $("#v-refund").onclick = () => { closeSheet(); setTimeout(() => openRefund(t), 140); };
+  $("#v-cancel").onclick = closeSheet;
+}
+function closeSheet() {
+  $("#mask").classList.remove("on"); $("#sheet").classList.remove("on");
+}
+$("#mask").onclick = closeSheet;
+// 结果抽屉的出口：点遮罩、点 ×、点「记完了」都算结束。
+// 前两条是给熟练用户的快路径，不写在界面上——写成一行「点空白处关闭」的说明，
+// 等于承认交互没做好，还白占一行地方。
+$("#rsp-mask").onclick = closeReceipt;
+$("#bl-cancel").onclick = releaseBlocker;
+
+/* ---------------- 统计 ---------------- */
+function pieSVG(rows, total) {
+  if (!total) return "";
+  const R = 78, C = 84;
+  let acc = 0;
+  const paths = rows.map(r => {
+    const frac = r.value / total;
+    const a0 = acc * 2 * Math.PI - Math.PI / 2;
+    acc += frac;
+    const a1 = acc * 2 * Math.PI - Math.PI / 2;
+    if (frac >= 0.9995) return `<circle cx="${C}" cy="${C}" r="${R}" fill="${r.color}"/>`;
+    const x0 = (C + R * Math.cos(a0)).toFixed(2), y0 = (C + R * Math.sin(a0)).toFixed(2);
+    const x1 = (C + R * Math.cos(a1)).toFixed(2), y1 = (C + R * Math.sin(a1)).toFixed(2);
+    return `<path d="M${C},${C} L${x0},${y0} A${R},${R} 0 ${frac > 0.5 ? 1 : 0},1 ${x1},${y1} Z"
+      fill="${r.color}" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/>`;
+  }).join("");
+  return `<svg viewBox="0 0 168 168" width="168" height="168" role="img">${paths}</svg>`;
+}
+
+/* rows: [{label, value, color}] —— 饼图 + 右侧图例（金额与占比） */
+function pieBlock(rows, emptyText) {
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  if (!total) return `<div class="hint">${emptyText || "本月还没有数据"}</div>`;
+  return `<div class="pie-wrap">
+      <div class="pie-fig">${pieSVG(rows, total)}</div>
+      <div class="pie-legend">
+        ${rows.map(r => `<div class="pl-row">
+          <span class="pl-dot" style="background:${r.color}"></span>
+          <span class="pl-name">${r.label}</span>
+          <span class="pl-val mono">${money(r.value)}</span>
+          <span class="pl-pct">${(r.value / total * 100).toFixed(0)}%</span>
+        </div>`).join("")}
+      </div>
+    </div>`;
+}
+
+/* 饼图下面必须能对账：分类合计 − 冲抵后为负的分类 − 无主冲抵 = 支出。
+   以前只画饼不写字，遇到无主冲抵（或某类被冲成负数）时，「各项加起来」永远比
+   「支出」多，看图的人怎么加都对不上，只会怀疑是不是算错了。 */
+function catEquation(s, topN) {
+  const catTotal = s.cat_total;
+  if (catTotal == null || !catTotal) return "";   // 老后端没这两个字段，不硬编一个可能错的算式
+  const neg = s.cat_negative || 0;
+  const orphan = (s.refund_orphan || 0) + (s.reimb_orphan || 0);
+  const parts = [`分类合计 ${money(catTotal)}`];
+  if (neg) parts.push(`− 冲抵后为负 ${money(neg)}`);
+  if (orphan) parts.push(`− 无主冲抵 ${money(orphan)}`);
+  const tail = (neg || orphan) ? ` = 支出 ${money(s.expense || 0)}` : "";
+  return `<div class="hint" style="margin-top:8px">
+    ${parts.join(" ")}${tail}${topN ? `（图里只画前 ${topN} 类，合计按全部类目算）` : ""}。
+  </div>`;
+}
+
+/* ---------------- 统计 → 明细 ---------------- */
+/* 统计卡片上的金额都能点：点的是「这些数字由哪几笔组成」，看完能直接接着做抵扣。
+   翻译成明细的筛选条件时，跨月累计的指标（待报销 / 待用券）必须把月份放开——
+   它们本来就不属于某一个月，带着当月去筛只会看到一小部分，点进去数字对不上。 */
+const STAT_LINKS = {
+  shared:  { filter: { mark: "shared" },  allMonths: false },
+  pending: { filter: { mark: "pending" }, allMonths: true  },
+  reimb:   { filter: { mark: "reimb" },   allMonths: false },
+  voucher: { filter: { mark: "voucher" }, allMonths: true  },
+};
+
+function gotoList(key) {
+  const link = STAT_LINKS[key];
+  if (!link) return;
+  state.filter = { ...EMPTY_FILTER, ...link.filter };
+  state.month = link.allMonths ? "" : (state.month || nowMonth());
+  state.tab = "list";
+  renderNav();
+  render();
+  window.scrollTo(0, 0);
+}
+
+async function renderStats() {
+  // 统计只按月看：从明细的「全部月份」切回来时归位到本月，
+  // 否则月份框空着、/api/stats 却按当月算，两边对不上
+  if (!state.month) state.month = nowMonth();
+  $("#view").innerHTML = `
+    <div class="month-pick"><input type="month" id="s-month" value="${esc(state.month)}"></div>
+    <div id="stats-body"><div class="empty">加载中…</div></div>`;
+  $("#s-month").onchange = e => { state.month = e.target.value; loadStats(); };
+  loadStats();
+}
+async function loadStats() {
+  try {
+    const s = await api(`/stats?month=${state.month}`);
+    const netExpense = s.expense;                          // 服务端已按归属月算好净支出
+    const gross = s.expense_gross == null ? s.expense : s.expense_gross;
+    const offset = s.refund_offset || 0;
+    const orphan = s.refund_orphan || 0;
+    const reimbOff = s.reimb_offset || 0;
+    const orphanAll = orphan + (s.reimb_orphan || 0);
+    const balance = s.income - netExpense;                // 结余：收入 − 净支出
+    const ioMax = Math.max(1, s.income + netExpense);      // 收支对比条：两段之和占满整条
+    // by_category 只含支出，direction 缺失时按支出处理，避免整块饼图被过滤空
+    const allCats = s.by_category.filter(c => (c.direction || "expense") === "expense");
+    const cats = allCats.slice(0, 8)
+      .map(c => ({ label: c.cat_parent, value: c.total, color: catColorAny(c.cat_parent).c }));
+    const owners = s.by_owner.filter(o => o.expense > 0)
+      .map(o => ({ label: o.name, value: o.expense, color: ownerColor(o.id).c }));
+
+    $("#stats-body").innerHTML = `
+      <div class="card">
+        <h3>本月收支 · ${state.month}</h3>
+        <div class="bal-wrap">
+          <span class="bal-label">结余</span>
+          <span class="bal ${balance >= 0 ? "pos" : "neg"}">${balance < 0 ? "−" : ""}<span class="cur">¥</span>${(Math.abs(balance) / 100).toFixed(2)}</span>
+        </div>
+        <div class="io-bar">
+          <div class="io-seg in" style="width:${(s.income / ioMax * 100).toFixed(1)}%"></div>
+          <div class="io-seg out" style="width:${(netExpense / ioMax * 100).toFixed(1)}%"></div>
+        </div>
+        <div class="io-legend">
+          <span><i class="io-dot in"></i>收入 ${money(s.income)}</span>
+          <span><i class="io-dot out"></i>支出 ${money(netExpense)}</span>
+        </div>
+        ${(s.refund || s.reimb) ? `<div class="hint" style="margin-top:10px">
+          原支出 ${money(gross)}${offset ? `，退款冲抵 −${money(offset)}` : ""}${reimbOff ? `，报销冲抵 −${money(reimbOff)}` : ""}${orphanAll ? `（另有本月无主冲抵 −${money(orphanAll)}）` : ""}，实付 ${money(netExpense)}。
+        </div>` : ""}
+        <div class="hint" style="margin-top:${(s.refund || s.reimb) ? "6px" : "10px"}">结余 = 收入 − 净支出，只统计所选月份；退款和报销都按原支出所在的月份冲减。</div>
+      </div>
+
+      <div class="card">
+        <h3>报销</h3>
+        <button class="stat-link" data-goto="pending">
+          <span class="hint">待报销（跨月累计，还没到账）</span>
+          <b class="amt" style="color:#b45309">${money(s.pending)}${s.pending_cnt ? " · " + s.pending_cnt + "笔" : ""}<i class="go">›</i></b>
+        </button>
+        <button class="stat-link" data-goto="reimb" style="margin-top:5px">
+          <span class="hint">本月报销到账（按原支出所在月冲减）</span>
+          <b class="amt" style="color:var(--accent)">${money(s.reimb || 0)}<i class="go">›</i></b>
+        </button>
+      </div>
+
+      <div class="card">
+        <h3>待用券</h3>
+        <button class="stat-link" data-goto="voucher">
+          <span class="hint">买了还没用掉（跨月累计）</span>
+          <b class="amt" style="color:#6d629a">${money(s.voucher)}${s.voucher_cnt ? " · " + s.voucher_cnt + "笔" : ""}<i class="go">›</i></b>
+        </button>
+        <div class="hint" style="margin-top:9px">这部分钱已经花出去了，仍计入支出；用掉或退掉后在明细里点「处理」。</div>
+      </div>
+
+      <div class="card">
+        <h3>共同支出</h3>
+        <button class="stat-link" data-goto="shared">
+          <span class="hint">家庭公共开销（已扣退款）</span>
+          <b class="amt">${money(s.shared)}<i class="go">›</i></b>
+        </button>
+      </div>
+
+      <div class="card">
+        <h3>归属 · 本月支出</h3>
+        ${pieBlock(owners, "本月还没有支出")}
+      </div>
+
+      <div class="card">
+        <h3>支出分类 · 本月支出</h3>
+        ${pieBlock(cats, "本月还没有支出")}
+        ${catEquation(s, allCats.length > cats.length ? cats.length : 0)}
+      </div>`;
+
+    // 绑定放最后：卡片是刚写进去的，事件只能在这之后挂
+    document.querySelectorAll("#stats-body [data-goto]").forEach(b => {
+      b.onclick = () => gotoList(b.dataset.goto);
+    });
+  } catch (e) { $("#stats-body").innerHTML = `<div class="empty">${e.message}</div>`; }
+}
+
+/* ---------------- 分类管理（管理员） ----------------
+   一屏只看一棵树：方向胶囊 → 紧凑列表 → 点开哪行才就地编辑。
+   以前每个大类永远处于编辑态（无边框名字框 + 10 个色块常驻），16 个大类铺两千多像素，
+   一屏只看得见两个半。2026-10-29 重做。
+
+   重绘规则很重要：**click 里可以整块重绘，change（失焦/回车）里只能局部打补丁**。
+   因为失焦事件先于点击发生，change 里重绘会把用户正要点的那个元素换掉，那一下点击就丢了。 */
+const CAT_DIR_LABEL = { expense: "支出", income: "收入", refund: "退款" };
+const CAT_DIRS = ["expense", "income", "refund"];
+
+let catEdit = null;       // 编辑草稿（整棵树，保存时整体覆盖）
+let catBase = null;       // 打开面板时的原样，用来算「几处未保存」
+let catUsage = {};        // {方向: {大类: {total, month}}}，行尾的「本月 N 笔」
+let catTab = "expense";   // 当前方向
+let catOpen = "";         // 展开的大类（同一时刻只展开一个，屏幕才够用）
+let catArm = "";          // 「删除」二次确认中的大类
+let catSubEdit = "";      // 正在改名的子类，键是「父|子」
+let catNameErr = "";      // 大类改名冲突的就地提示
+
+const cloneTree = o => JSON.parse(JSON.stringify(o));
+
+/* 草稿里这个大类当前的配色：优先用它自己的色位（还没保存也立刻看得到），
+   没配就按树序兜底——与 catColor() 同一套规则，保存前后颜色不会跳 */
+function catDraftColor(dir, p) {
+  const tree = catEdit[dir] || {};
+  const node = tree[p] || {};
+  const slot = node.color_slot == null ? Object.keys(tree).indexOf(p) : node.color_slot;
+  const n = CAT_PALETTE.length;
+  return CAT_PALETTE[((slot % n) + n) % n];
+}
+
+/* 未保存计数：拿草稿和打开时的快照比。
+   改名 = 一个键消失 + 一个键新增，而子类和配色都没动 → 配成 1 处；
+   否则「改了三个名字」会显示成 6 处，看着像出 bug 了。 */
+function catDiffCount() {
+  if (!catEdit || !catBase) return 0;
+  let n = 0;
+  for (const dir of CAT_DIRS) {
+    const a = catBase[dir] || {}, b = catEdit[dir] || {};
+    const removed = Object.keys(a).filter(k => !b[k]);
+    const added = Object.keys(b).filter(k => !a[k]);
+    const paired = new Set();
+    for (const r of removed) {
+      const hit = added.find(k => !paired.has(k)
+        && a[r].subs.join("\u0001") === b[k].subs.join("\u0001")
+        && (a[r].color_slot ?? null) === (b[k].color_slot ?? null));
+      if (hit) { paired.add(r); paired.add(hit); n += 1; }
+    }
+    n += removed.filter(k => !paired.has(k)).length + added.filter(k => !paired.has(k)).length;
+    for (const k of Object.keys(a)) {
+      if (!a[k] || !b[k]) continue;
+      if ((a[k].color_slot ?? null) !== (b[k].color_slot ?? null)) n += 1;
+      // join 带顺序，所以子类的换序也算「一处改动」——否则拖完顺序点了保存会提示没改动
+      if (a[k].subs.join("\u0001") !== b[k].subs.join("\u0001")) n += 1;
+    }
+    // 大类的纯换序：键集合一样、只有先后变了才算 1 处。
+    // 改名已经在上面配过对（键集合不同），所以不会重复计
+    const ka = Object.keys(a).sort().join("\u0001"), kb = Object.keys(b).sort().join("\u0001");
+    if (ka === kb && Object.keys(a).join("\u0001") !== Object.keys(b).join("\u0001")) n += 1;
+  }
+  return n;
+}
+
+function catEditorHtml(cfg, usage) {
+  if (cfg) {
+    catEdit = cloneTree(cfg);
+    catBase = cloneTree(cfg);
+    catTab = CAT_DIRS.find(d => Object.keys(cfg[d] || {}).length) || "expense";
+    catOpen = ""; catArm = ""; catSubEdit = ""; catNameErr = "";
+  }
+  if (usage) catUsage = usage;
+  if (!catEdit) return `<div class="hint">配置加载失败，刷新重试</div>`;
+  return `
+    <div class="cat-tabs">
+      ${CAT_DIRS.map(d => `<button class="chip ${catTab === d ? "on" : ""}" data-ctab="${d}">${
+        CAT_DIR_LABEL[d]} ${Object.keys(catEdit[d] || {}).length}</button>`).join("")}
+    </div>
+    <div class="cat-list">${catListHtml()}</div>
+    <input class="cat-addp" id="cat-newp" placeholder="+ 新增大类，回车添加" autocomplete="off">
+    <div id="cat-foot">${catBarHtml()}</div>`;
+}
+
+function catListHtml() {
+  const tree = catEdit[catTab] || {};
+  const names = Object.keys(tree);
+  if (!names.length) return `<div class="hint" style="padding:14px 13px">这个方向还没有大类</div>`;
+  return names.map(p => {
+    const open = catOpen === p;
+    const u = (catUsage[catTab] || {})[p] || {};
+    return `<div class="cat-item ${open ? "open" : ""}" data-p="${esc(p)}">
+      <div class="cat-hd" data-open="${esc(p)}">
+        <span class="cat-dot" style="background:${catDraftColor(catTab, p).c}"></span>
+        <span class="nm">${esc(p)}</span>
+        <span class="meta">${tree[p].subs.length} 项 · 本月 ${u.month || 0} 笔</span>
+        <i class="arw"></i>
+      </div>
+      ${open ? catDetailHtml(p) : ""}
+    </div>`;
+  }).join("");
+}
+
+function catDetailHtml(p) {
+  const node = catEdit[catTab][p];
+  const u = (catUsage[catTab] || {})[p] || {};
+  const swatches = CAT_PALETTE.map((col, i) => `
+    <button class="cat-sw" data-sw="${i}" title="色位 ${i}"
+      style="background:${col.bg};border-color:${node.color_slot === i ? col.c : "var(--line)"};
+             box-shadow:${node.color_slot === i ? `inset 0 0 0 2px ${col.c}` : "none"}"></button>`).join("");
+  const subs = node.subs.map(s => (catSubEdit === p + "\u0001" + s)
+    ? `<span class="cat-sub edit"><input id="cat-sub-in" data-subin="${esc(s)}" value="${esc(s)}">
+         <b class="x" data-subdel="1">×</b></span>`
+    : `<button class="cat-sub" data-subedit="${esc(s)}">${esc(s)}</button>`).join("");
+  const armed = catArm === p;
+  return `<div class="cat-detail">
+    <div class="f-label">名称 <span>改完点别处生效，历史账单一起改</span></div>
+    <input id="cat-pname" data-pname="1" value="${esc(p)}" autocomplete="off">
+    ${catNameErr ? `<div class="cat-err">${esc(catNameErr)}</div>` : ""}
+    <div class="f-label">颜色 <span>同一个色位在饼图、筛选胶囊里通用</span></div>
+    <div class="cat-swatches">${swatches}</div>
+    <div class="f-label">子类 <span>点一下改名，× 删掉，长按可拖动排序</span></div>
+    <div class="cat-subs">
+      ${subs}
+      <input class="cat-sub-new" id="cat-sub-new" placeholder="+ 子类" autocomplete="off">
+    </div>
+    <button class="cat-delp ${armed ? "armed" : ""}" data-delp="${esc(p)}">${armed
+      ? `再点一次，确认删除「${esc(p)}」`
+      : `删除这个大类${u.total ? `（${u.total} 笔账在用）` : ""}`}</button>
+    ${armed ? `<div class="hint" style="margin-top:6px">历史账单保持原样，只是新账不能再选它；保存前点「放弃」可以整体撤回。</div>` : ""}
+  </div>`;
+}
+
+function catBarHtml() {
+  const n = catDiffCount();
+  return `<div style="height:${n ? 52 : 0}px"></div>
+    <div class="cat-bar ${n ? "on" : ""}"><div class="cat-bar-in">
+      <span class="n">${n} 处未保存</span>
+      <button class="btn ghost small" id="cat-undo">放弃</button>
+      <button class="btn small" id="cat-save">保存</button>
+    </div></div>`;
+}
+
+/* 只重画底部浮条：change 里改了几个字就整块重绘的话，会把用户下一次点击的目标一起换掉 */
+function catSyncBar() {
+  const foot = $("#cat-foot");
+  if (!foot) return;
+  foot.innerHTML = catBarHtml();
+  const s = $("#cat-save"), u = $("#cat-undo");
+  if (s) s.onclick = () => withBusy(s, catSave);
+  if (u) u.onclick = catUndo;
+}
+
+function catRender(focusSel) {
+  const box = $("#cat-editor");
+  if (!box) return;
+  box.innerHTML = catEditorHtml();
+  catBind();
+  catSyncBar();
+  const f = focusSel && box.querySelector(focusSel);
+  if (f) {
+    f.focus();
+    const n = f.value.length;
+    try { f.setSelectionRange(n, n); } catch (e) {}   // 光标留在末尾，连着加时不用重新点
+  }
+}
+
+/* 改名成功后只打补丁，不整块重绘：这一行的标题、删除按钮、浮条计数三处跟着换 */
+function catPatchRow(oldName, newName) {
+  const box = $("#cat-editor");
+  if (!box) return;
+  const hd = box.querySelector(`.cat-hd[data-open="${CSS.escape(oldName)}"]`);
+  if (hd) { hd.dataset.open = newName; hd.querySelector(".nm").textContent = newName; }
+  const delp = box.querySelector(`.cat-delp[data-delp="${CSS.escape(oldName)}"]`);
+  if (delp) delp.dataset.delp = newName;
+}
+
+function catShowNameErr(msg) {
+  catNameErr = msg;
+  const box = $("#cat-editor");
+  if (!box) return;
+  let el = box.querySelector(".cat-err");
+  if (!msg) { if (el) el.remove(); return; }
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "cat-err";
+    const inp = box.querySelector("#cat-pname");
+    if (inp) inp.after(el);
+  }
+  el.textContent = msg;
+}
+
+function catCommitName(input) {
+  const old = catOpen, tree = catEdit[catTab];
+  const name = (input.value || "").trim().slice(0, 12);
+  if (!name) { input.value = old; return catShowNameErr("名字不能为空"); }
+  if (name === old) return catShowNameErr("");
+  if (tree[name]) {
+    // 以前这里直接 return，输入框里还留着新名字，保存后又变回去——现在明说原因
+    input.value = old;
+    return catShowNameErr(`已经有「${name}」了，换个名字`);
+  }
+  const next = {};                    // 只换键，保持原来的顺序
+  for (const [k, v] of Object.entries(tree)) next[k === old ? name : k] = v;
+  catEdit[catTab] = next;
+  catOpen = name;
+  catShowNameErr("");
+  catPatchRow(old, name);
+  catSyncBar();
+}
+
+function catCommitSub(input) {
+  const parent = catOpen, subs = catEdit[catTab][parent].subs;
+  const old = input.dataset.subin;
+  const name = (input.value || "").trim().slice(0, 12);
+  catSubEdit = "";
+  const back = () => {                // 换回普通胶囊，别的节点一个都不动
+    const span = input.parentElement;
+    if (!span) return;
+    const btn = document.createElement("button");
+    btn.className = "cat-sub";
+    btn.dataset.subedit = old;
+    btn.textContent = old;
+    span.replaceWith(btn);
+  };
+  if (!name || name === old) return back();
+  if (subs.includes(name)) { back(); return toast("这个子类已经有了"); }
+  catEdit[catTab][parent].subs = subs.map(x => (x === old ? name : x));
+  input.dataset.subin = name;
+  catSubEdit = "";
+  const span = input.parentElement;
+  if (span) {
+    const btn = document.createElement("button");
+    btn.className = "cat-sub";
+    btn.dataset.subedit = name;
+    btn.textContent = name;
+    span.replaceWith(btn);
+  }
+  catSyncBar();
+}
+
+/* ---------------- 分类排序：长按拖拽 ----------------
+   为什么不用 HTML5 drag & drop：手机上根本不触发；也不用 mousedown/mousemove，
+   因为手指按住时页面本来就在滚。这里用 Pointer Events + 320ms 长按判定：
+   按下后不动够久才算进入拖动，中途位移超过 8px 就当作滚动，立刻放弃。
+   进入拖动后在 document 上挂非 passive 的 touchmove 拦默认行为，页面才不会跟着滚
+   （给元素设 touch-action:none 会把这块的普通滚动一起废掉，只能按需拦）。
+
+   落点靠 elementFromPoint 找「手指下面那一项」：拖动中的元素是 position:fixed 且
+   pointer-events:none，命中的就是它底下的兄弟项。拿到目标项后按中线决定插前还是插后，
+   虚线占位块 ph 标出「松手会落在哪」。松手时**从 DOM 顺序反推数据顺序**，不自己算索引——
+   算索引要处理「自己被排除」的偏差，看一眼 DOM 更不容易错。 */
+const CAT_LONGPRESS = 320;
+const CAT_SLOP = 8;
+let catDrag = null;
+let catClickBlock = 0;      // 拖完那一下 click 要吞掉，否则松手会顺手展开一行
+
+function catDragTouch(e) {
+  if (catDrag && catDrag.active) e.preventDefault();
+}
+
+function catDragStart(e) {
+  if (catDrag) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  if (e.target.closest("input,textarea,[data-subdel]")) return;
+  const sub = e.target.closest(".cat-sub");
+  const item = e.target.closest(".cat-item");
+  let d = null;
+  if (sub && !sub.classList.contains("edit")) {
+    // 子类只在本大类的子类堆里排：跨到大类外面就是改分类，不是排序
+    if (!item || !item.classList.contains("open")) return;
+    d = { kind: "sub", el: sub, container: sub.closest(".cat-subs"), sel: ".cat-sub",
+          parent: item.dataset.p };
+  } else if (item && e.target.closest(".cat-hd")) {
+    d = { kind: "parent", el: item, container: item.parentElement, sel: ".cat-item" };
+  }
+  if (!d) return;
+  d.pid = e.pointerId;
+  d.x0 = e.clientX; d.y0 = e.clientY;
+  d.mouse = e.pointerType === "mouse";
+  d.tmr = setTimeout(() => catDragArm(d), CAT_LONGPRESS);
+  catDrag = d;
+  window.addEventListener("pointermove", catDragMove, { passive: false });
+  window.addEventListener("pointerup", catDragEnd);
+  window.addEventListener("pointercancel", catDragCancel);
+}
+
+/* 长按够时长了：把这一项摘出来跟着手指走，原地留一块虚线占位 */
+function catDragArm(d) {
+  if (catDrag !== d) return;
+  const r = d.el.getBoundingClientRect();
+  d.active = true;
+  d.el.classList.add("dragging");
+  d.el.style.left = r.left + "px";
+  d.el.style.top = r.top + "px";
+  d.el.style.width = r.width + "px";
+  d.ph = document.createElement("div");
+  d.ph.className = d.kind === "parent" ? "cat-ph" : "cat-ph-sub";
+  d.ph.style.height = r.height + "px";
+  if (d.kind === "sub") d.ph.style.width = r.width + "px";
+  d.el.after(d.ph);
+  document.addEventListener("touchmove", catDragTouch, { passive: false });
+  if (navigator.vibrate) { try { navigator.vibrate(8); } catch (err) {} }
+}
+
+function catDragMove(e) {
+  const d = catDrag;
+  if (!d || e.pointerId !== d.pid) return;
+  if (!d.active) {
+    const moved = Math.hypot(e.clientX - d.x0, e.clientY - d.y0);
+    if (moved <= CAT_SLOP) return;
+    // 手指：一动就是滚页面，撤掉。鼠标：没有滚动这回事，拖起来就进拖动（不必干等 320ms）
+    if (!d.mouse) return catDragCancel();
+    clearTimeout(d.tmr);
+    catDragArm(d);
+  }
+  e.preventDefault();
+  d.el.style.transform = `translate(${e.clientX - d.x0}px, ${e.clientY - d.y0}px)`;
+  catDragHover(e);
+  // 拖到屏幕上下边缘自动滚：长列表不用先松手、滚一屏、再按住
+  const EDGE = 70;
+  if (e.clientY < EDGE) window.scrollBy(0, -12);
+  else if (e.clientY > window.innerHeight - EDGE) window.scrollBy(0, 12);
+}
+
+function catDragHover(e) {
+  const d = catDrag;
+  const hit = document.elementFromPoint(e.clientX, e.clientY);
+  const over = hit && hit.closest(d.sel);
+  if (!over || over === d.el || over === d.ph) return;
+  if (over.parentElement !== d.ph.parentElement) return;
+  const r = over.getBoundingClientRect();
+  let after;
+  if (d.kind === "parent") after = e.clientY > r.top + r.height / 2;
+  else if (e.clientY > r.bottom) after = true;
+  else if (e.clientY < r.top) after = false;
+  else after = e.clientX > r.left + r.width / 2;
+  const ref = after ? over.nextElementSibling : over;
+  if (ref === d.ph) return;
+  over.parentElement.insertBefore(d.ph, ref);
+}
+
+function catDragEnd() {
+  const d = catDrag;
+  if (!d) return;
+  clearTimeout(d.tmr);
+  if (!d.active) return catDragCleanup();
+  const selfKey = d.kind === "parent" ? d.el.dataset.p : d.el.dataset.subedit;
+  const order = [];
+  for (const el of d.container.children) {
+    if (el === d.el) continue;
+    if (el === d.ph) { order.push(selfKey); continue; }
+    if (!el.matches(d.sel)) continue;
+    const k = d.kind === "parent" ? el.dataset.p : el.dataset.subedit;
+    if (k != null) order.push(k);        // 改名输入框（.cat-sub.edit）没有键，跳过
+  }
+  catDragCleanup();
+  if (d.kind === "parent") catApplyParentOrder(order);
+  else catApplySubOrder(d.parent, order);
+  catRender();                           // 顺序变了整块重画，展开状态沿用 catOpen
+}
+
+function catDragCancel() {
+  const d = catDrag;
+  if (!d) return;
+  catDragCleanup();
+  // 拖动中被系统打断（来电、手势返回）：把固定定位撤掉就行，DOM 顺序本来就没动过
+  if (d.active) catRender();
+}
+
+function catDragCleanup() {
+  const d = catDrag;
+  catDrag = null;
+  if (!d) return;
+  clearTimeout(d.tmr);
+  window.removeEventListener("pointermove", catDragMove);
+  window.removeEventListener("pointerup", catDragEnd);
+  window.removeEventListener("pointercancel", catDragCancel);
+  document.removeEventListener("touchmove", catDragTouch);
+  if (d.ph && d.ph.parentElement) d.ph.remove();
+  if (d.el) {
+    d.el.classList.remove("dragging");
+    ["left", "top", "width", "transform"].forEach(k => d.el.style.removeProperty(k));
+  }
+  if (d.active) catClickBlock = Date.now();
+}
+
+/* 数据落地：只换键序，节点对象原样搬过去（色位、子类都不动） */
+function catApplyParentOrder(order) {
+  const tree = catEdit[catTab], next = {};
+  for (const k of order) if (tree[k]) next[k] = tree[k];
+  for (const k of Object.keys(tree)) if (!(k in next)) next[k] = tree[k];   // 兜底：没进 DOM 的别丢
+  if (Object.keys(next).join("\u0001") !== Object.keys(tree).join("\u0001")) catEdit[catTab] = next;
+}
+
+function catApplySubOrder(parent, order) {
+  const node = catEdit[catTab] && catEdit[catTab][parent];
+  if (!node) return;
+  const cur = node.subs.slice();
+  const next = order.filter(s => cur.includes(s));
+  for (const s of cur) if (!next.includes(s)) next.push(s);
+  node.subs = next;
+}
+
+function catBind() {
+  const box = $("#cat-editor");
+  if (!box) return;
+
+  box.onclick = e => {
+    // 刚拖完松手的那一下 click 不算「点了一下」：否则会顺手展开/收起，甚至进改名
+    if (Date.now() - catClickBlock < 400) return;
+    const el = e.target.closest("[data-ctab],[data-open],[data-sw],[data-subedit],[data-delp]");
+    if (!el) return;
+    const d = el.dataset;
+
+    if (d.ctab) {                     // 换方向：收起展开项，免得展开状态串到另一棵树
+      catTab = d.ctab; catOpen = ""; catArm = ""; catSubEdit = ""; catNameErr = "";
+      return catRender();
+    }
+    if (d.open != null) {             // 展开 / 收起
+      catOpen = catOpen === d.open ? "" : d.open;
+      catArm = ""; catSubEdit = ""; catNameErr = "";
+      return catRender();
+    }
+    if (d.sw != null) {               // 换色位：再点同一个是取消
+      const node = catEdit[catTab][catOpen];
+      node.color_slot = node.color_slot === +d.sw ? null : +d.sw;
+      return catRender();
+    }
+    if (d.subedit != null) {          // 点子类 → 就地变成输入框
+      catSubEdit = catOpen + "\u0001" + d.subedit;
+      return catRender("#cat-sub-in");
+    }
+    if (d.delp != null) {             // 两下才真删：第一下只是把后果说清楚
+      if (catArm !== d.delp) { catArm = d.delp; return catRender(); }
+      if (Object.keys(catEdit[catTab]).length <= 1) return toast("每个方向至少要留一个大类");
+      delete catEdit[catTab][d.delp];
+      catOpen = ""; catArm = "";
+      toast("已删除，保存前点「放弃」可撤回");
+      return catRender();
+    }
+  };
+
+  /* 子类的 × 必须抢在 blur 之前处理：输入框一失焦就会走 onchange 把这一小段 DOM 换掉，
+     等 click 落到时按钮已经不是原来那个元素了，第一下必空。pointerdown + 阻止默认，
+     焦点不动、change 不触发，删除才由我们来。 */
+  box.onpointerdown = e => {
+    const x = e.target.closest("[data-subdel]");
+    if (!x) return catDragStart(e);     // 长按拖动排序的起点（按下只是计时，动起来就撤）
+    e.preventDefault();
+    const subs = catEdit[catTab][catOpen].subs;
+    if (subs.length <= 1) return toast("每个大类至少要留一个子类");
+    const name = catSubEdit.split("\u0001").slice(1).join("\u0001");
+    catEdit[catTab][catOpen].subs = subs.filter(v => v !== name);
+    catSubEdit = "";
+    catRender("#cat-sub-new");
+  };
+
+  box.onchange = e => {
+    const t = e.target;
+    if (t.dataset.pname) return catCommitName(t);
+    if (t.dataset.subin !== undefined) return catCommitSub(t);
+  };
+
+  box.onkeydown = e => {
+    const t = e.target;
+    if (e.key === "Escape") { catSubEdit = ""; catNameErr = ""; return catRender(); }
+    if (e.key !== "Enter") return;
+    if (t.id === "cat-newp") {
+      e.preventDefault();
+      const name = (t.value || "").trim().slice(0, 12);
+      if (!name) return;
+      if (catEdit[catTab][name]) return toast("这个大类已存在");
+      catEdit[catTab][name] = { color_slot: null, subs: ["其他"] };
+      catOpen = name; catArm = "";
+      t.value = "";
+      return catRender("#cat-sub-new");     // 新增完直接能加子类
+    }
+    if (t.id === "cat-sub-new") {
+      e.preventDefault();
+      const name = (t.value || "").trim().slice(0, 12);
+      if (!name) return;
+      const subs = catEdit[catTab][catOpen].subs;
+      if (subs.includes(name)) return toast("这个子类已经有了");
+      subs.push(name);
+      t.value = "";
+      return catRender("#cat-sub-new");     // 连着加不用再点一次（以前每次都失焦）
+    }
+    if (t.dataset.subin !== undefined || t.dataset.pname) {
+      e.preventDefault();
+      t.blur();                             // 走 onchange 那条路，避免两套提交逻辑
+    }
+  };
+}
+
+function catUndo() {
+  catEdit = cloneTree(catBase);
+  catOpen = ""; catArm = ""; catSubEdit = ""; catNameErr = "";
+  catRender();
+}
+
+/* 保存按钮原来是一下把整棵树覆盖上去：这次改动会不会连带改写历史账单、
+   有没有分类被删掉，用户按下去之前完全看不见。R3 就是这么把 3 笔账的分类
+   悄悄改到了别的类目下。现在的顺序是：预览（只读）→ 有历史的删不掉 → 会改写先问 → 再落库。 */
+function catItemLabel(x) {
+  return x.type === "sub" ? `${x.parent} / ${x.from}` : x.from;
+}
+function catBlockedText(plan) {
+  const all = plan.blocked || [];
+  const shown = all.slice(0, 3).map(b => `「${catItemLabel(b)}」${b.affected} 笔`);
+  let body = shown.join("、");
+  if (all.length > shown.length) body += ` 等 ${all.length} 个分类`;
+  return "这些分类下还有历史账单，不能直接删：" + body +
+    "\n\n想换名字请改名（子类保持一致就能认出来）；想合并，先把这些账改到目标分类。";
+}
+function catConfirmText(plan) {
+  const hits = (plan.renames || []).filter(r => r.affected > 0);
+  const shown = hits.slice(0, 3).map(r => `· ${catItemLabel(r)} → ${r.to}（${r.affected} 笔）`);
+  if (hits.length > shown.length) shown.push(`· 等 ${hits.length - shown.length} 处改名`);
+  return `这次保存会改写 ${plan.affected_total} 笔历史账单的分类：\n\n${shown.join("\n")}` +
+    "\n\n只换分类名，金额和日期都不动。继续？";
+}
+
+async function catSave() {
+  if (!catEdit) return;
+  try {
+    // 第一道门：只读预览，一个字都不写。失败也不会留下半截状态。
+    const pv = (await api("/categories/config",
+      { method: "POST", body: { config: catEdit, preview: true } })).preview || {};
+    if ((pv.blocked || []).length) return void alert(catBlockedText(pv));
+    let dirty = (pv.affected_total || 0) > 0;
+    if (dirty && !confirm(catConfirmText(pv))) return;   // 用户改主意，账一笔没动
+
+    // 第二道门：落库。服务端会按当时的库重算计划，所以上面那份 preview 只用来问，
+    // 不能当提交依据。两步之间若有人也改了分类，服务端可能把「要确认」丢回来——
+    // 就地补确认再提交一次，最多两圈。
+    let r;
+    for (let i = 0; i < 2; i++) {
+      try {
+        r = await api("/categories/config",
+          { method: "POST", body: dirty ? { config: catEdit, confirm: true } : { config: catEdit } });
+        break;
+      } catch (e) {
+        if (e.code === "category_has_history" && e.preview) return void alert(catBlockedText(e.preview));
+        if (e.code === "need_confirm" && e.preview && !dirty) {
+          if (!confirm(catConfirmText(e.preview))) return;
+          dirty = true;
+          continue;
+        }
+        throw e;
+      }
+    }
+    if (!r) return;
+    toast(r.renamed_tx ? `已保存，连带更新 ${r.renamed_tx} 笔历史账单` : "已保存");
+    state.meta = await api("/meta");          // 让全页立即用上新的树和配色
+    catEdit = null; catBase = null;
+    renderMe();
+  } catch (e) { toast(e.message); }
+}
+
+/* ---------------- 设置 ---------------- */
+const kTok = n => (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n || 0));
+async function renderMe() {
+  const me = state.me;
+  let settings = null, logs = null, catCfg = null, catLogs = null;
+  if (me.is_admin) {
+    try { settings = await api("/settings"); } catch (e) {}
+    try { logs = await api("/ai/logs?limit=20"); } catch (e) {}
+    try { const cc = await api("/categories/config"); catCfg = cc.config; catUsage = cc.usage || {}; } catch (e) {}
+    try { catLogs = (await api("/categories/logs")).items; } catch (e) {}
+  }
+
+  $("#view").innerHTML = `
+    <div class="card">
+      <h3>当前账号</h3>
+      <div class="spread"><span>${me.display_name}</span><span class="hint">${me.username}</span></div>
+    </div>
+
+    <div class="card">
+      <h3>修改密码</h3>
+      <div class="field"><label>原密码</label><input type="password" id="p-old" autocomplete="current-password"></div>
+      <div class="field"><label>新密码（至少 8 位）</label><input type="password" id="p-new" autocomplete="new-password"></div>
+      <button class="btn" id="p-save">保存</button>
+    </div>
+
+    ${me.is_admin ? `
+    <div class="card">
+      <h3>分类管理</h3>
+      <div class="hint" style="margin-bottom:12px">
+        <b>长按大类或子类可以拖动排序</b>，这里的顺序就是记账页选择器、筛选胶囊的先后；拖完点底部「保存」才生效。<br>
+        改名会连带更新历史账单和统计，保存前会先告诉你影响几笔、要你确认；<br>
+        删除只对没用过的分类有效——下面还有账单的分类删不掉，只能改名或先把账改走。<br>
+        每个方向至少留 1 个大类，每个大类至少留 1 个子类；新名字不能和历史账单里的旧名字相同。
+      </div>
+      <div id="cat-editor">${catEditorHtml(catCfg, catUsage)}</div>
+    </div>
+
+    <div class="card">
+      <h3>AI 记账</h3>
+      <div class="hint" style="margin-bottom:10px">
+        当前：${settings && settings.ai_enabled ? "已配置" : "未配置"}${settings && settings.ai_key_masked ? "（" + settings.ai_key_masked + "）" : ""}
+      </div>
+      <div class="field"><label>智谱 API Key</label><input id="ai-key" placeholder="留空则不修改"></div>
+      <div class="field"><label>模型</label><input id="ai-model" value="${esc(settings ? settings.ai_model : "")}" placeholder="glm-5.3-flash"></div>
+      <button class="btn" id="ai-save">保存</button>
+      <div class="hint" style="margin-top:10px">
+        glm-5.3-flash 是原生多模态：写一句话和拍张小票走同一个模型，不需要另配视觉模型。<br>
+        文字和识图都带 reasoning_effort=low：文字约 1～2 秒，识图约 4～5 秒。<br>
+        识图曾经不压推理（怕读错金额），实测证伪——不压 12 秒、金额也没更准，只有分类更细一点。
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>AI 调用日志</h3>
+      ${logs && logs.week.count ? `
+        <div class="spread">
+          <span class="hint">近 7 天 ${logs.week.count} 次 · 成功 ${logs.week.ok}${logs.week.count > logs.week.ok ? " · 失败 " + (logs.week.count - logs.week.ok) : ""}</span>
+          <span class="hint mono">${kTok(logs.week.prompt_tokens)} 入 / ${kTok(logs.week.completion_tokens)} 出</span>
+        </div>
+        <div class="hint" style="margin-bottom:8px">平均 ${(logs.week.avg_ms / 1000).toFixed(1)} 秒</div>
+      ` : `<div class="hint" style="margin-bottom:8px">还没有调用记录，去「记一笔」试一句</div>`}
+      ${logs && logs.items.length ? logs.items.map(r => `
+        <div class="log-row">
+          <span class="log-tag ${r.status === "ok" ? "" : "bad"}">${r.kind === "image" ? "图" : "文"}</span>
+          <span class="log-main">${esc(r.input_brief || "（无文字）")}${r.status === "ok" ? "" : " · " + esc(r.error)}</span>
+          <span class="log-meta">${r.ts.slice(5, 16).replace("T", " ")}<br>${(r.latency_ms / 1000).toFixed(1)}s</span>
+        </div>`).join("") : ""}
+      <div class="hint" style="margin-top:10px">
+        只留 90 天，输入存前 120 字摘要（备注里有医院、人名，不整段留）。换模型或调 prompt 时拿它复盘。
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>分类修改日志</h3>
+      ${catLogs && catLogs.length ? catLogs.map(r => `
+        <div class="log-row">
+          <span class="log-tag ${r.action === "rename" ? "bad" : ""}">${
+            {add: "增", del: "删", rename: "改", color: "色", update: "存"}[r.action] || "记"}</span>
+          <span class="log-main">${esc(r.detail || r.cat_parent || "")}${
+            r.affected > 0 ? ` · 连带 ${r.affected} 笔` : ""}${r.user_name ? ` · ${esc(r.user_name)}` : ""}</span>
+          <span class="log-meta">${r.ts.slice(5, 16).replace("T", " ")}</span>
+        </div>`).join("") : `<div class="hint" style="margin-bottom:8px">还没有修改记录</div>`}
+      <div class="hint" style="margin-top:10px">保留最近 200 条。改名连带更新的账单笔数列在每条后面。</div>
+    </div>
+
+    <div class="card">
+      <h3>添加账号</h3>
+      <div class="field"><label>用户名（小写字母/数字/下划线）</label><input id="u-name" autocapitalize="none"></div>
+      <div class="field"><label>显示名</label><input id="u-display" placeholder="如：张三"></div>
+      <div class="field"><label>初始密码（至少 8 位）</label><input id="u-pwd" type="password"></div>
+      <button class="btn" id="u-save">创建</button>
+    </div>` : ""}
+
+    <button class="btn ghost" id="logout">退出登录</button>
+    <div style="height:10px"></div>
+    <div class="hint" style="text-align:center;padding:8px 0 20px">数据存在自己服务器上 · 每日自动备份</div>`;
+
+  $("#p-save").onclick = async () => {
+    try {
+      await api("/password", { method: "POST", body: { old: $("#p-old").value, new: $("#p-new").value } });
+      toast("密码已修改，请重新登录"); setTimeout(() => location.reload(), 1200);
+    } catch (e) { toast(e.message); }
+  };
+  $("#logout").onclick = doLogout;
+  if (me.is_admin) {
+    catBind();            // 列表的展开 / 改名 / 配色 / 增删都走这一套委托
+    catSyncBar();         // 浮条上的「保存 / 放弃」由它挂，草稿为空时浮条不出现
+    $("#ai-save").onclick = async () => {
+      try {
+        await api("/settings", { method: "POST", body: { ai_api_key: $("#ai-key").value, ai_model: $("#ai-model").value } });
+        toast("已保存"); renderMe();
+      } catch (e) { toast(e.message); }
+    };
+    $("#u-save").onclick = async () => {
+      try {
+        await api("/users", { method: "POST", body: {
+          username: $("#u-name").value, display_name: $("#u-display").value, password: $("#u-pwd").value } });
+        toast("账号已创建"); renderMe();
+      } catch (e) { toast(e.message); }
+    };
+  }
+}
+
+boot();
+</script>
+</body>
+</html>
