@@ -1,6 +1,6 @@
-# open-ledger · 家庭账本
+# open-ledger · 家庭 / 小团队账本
 
-一个自托管的双人家庭账本，支持支出 / 收入 / 退款、冲抵与报销、净额统计、CSV 导出和可选的 AI 记账。
+一个面向家庭与小团队的自托管账本，支持支出 / 收入 / 退款、冲抵与报销、净额统计、CSV 导出和可选的 AI 记账。
 
 - **单文件后端**：`ledger/server.py`，Python 3.11+ 标准库 + SQLite，无第三方依赖
 - **单页前端**：`ledger/www/index.html`，原生 JS，无框架、无构建步骤
@@ -25,7 +25,7 @@
 ## 快速开始
 
 ```bash
-git clone <your-repo-url> open-ledger
+git clone https://github.com/rain-Qing/open-ledger.git open-ledger
 cd open-ledger
 
 LEDGER_HOME="$PWD/ledger" LEDGER_PORT=9103 python3 ledger/server.py
@@ -111,7 +111,7 @@ python tests/probe_regressions.py
 
 ## 安全边界
 
-这是一个**单租户、家庭规模**的应用，不是多租户/企业级系统：
+这是一个**单租户、家庭/小团队规模**的应用，不是多租户/企业级系统：
 
 - 任何登录账号都可以修改或删除其他人的记录（设计取舍）；
 - 没有 CSRF token（依赖 SameSite=Lax Cookie 和 JSON 请求体）、没有 2FA、没有记录级权限；
@@ -134,7 +134,7 @@ tests/
   probe_regressions.py   历史缺陷探针
 deploy/
   deploy.sh              运行时代码同步 + 健康检查
-  systemd/               ledger.service 与 128M drop-in
+  systemd/               ledger.service 与 96M 内存上限 drop-in
   cron/ledger-backup     每日备份
   caddy/                 反代示例
 docs/
