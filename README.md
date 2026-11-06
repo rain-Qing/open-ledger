@@ -152,6 +152,7 @@ tools/
 - [家庭账本-功能大全](docs/家庭账本-功能大全.md)：功能、API、数据模型、统计公式、扩展指南
 - [AGENTS.md](AGENTS.md)：开发规范（测试、部署、禁改清单、踩过的坑）
 - [CHANGELOG.md](CHANGELOG.md)：变更记录
+- [ROADMAP.md](ROADMAP.md)：公开发布后的优化计划与优先级
 
 ## License
 
