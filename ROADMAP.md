@@ -24,8 +24,8 @@
 
 ## P0 · 公开门面
 
-- [ ] **创建 v2.1.0 Release**（S）
-  tag 已存在，只缺 Release 说明。建完后首页会显示 Latest。
+- [x] **创建 v2.1.0 Release**（S）
+  2026-11-13 已发布（tag 指向 `2aa3200`），首页显示 Latest。
 - [ ] **补齐社区文件**（M）
   `CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/{bug,feature}.yml`、`.github/pull_request_template.md`。
   验收：GitHub 社区健康度 ≥ 90%。
