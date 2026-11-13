@@ -1,8 +1,8 @@
 # ROADMAP · 后续优化计划
 
-> 记录 v2.0.0 公开发布后的优化项，按优先级排列。
+> 记录 v2.1.0 发布后的优化项，按优先级排列。
 > 完成一项就把 `[ ]` 改成 `[x]`，并在 [`CHANGELOG.md`](CHANGELOG.md) 记一笔。
-> 基线：2026-11-04（公开仓库首日）。
+> 基线：2026-11-13（v2.1.0 发布日）。
 
 ## 当前状态
 
@@ -10,7 +10,7 @@
 |---|---|
 | CI | Python 3.11 / 3.12 / 3.13 全绿 |
 | 回归 | 157 用例 / 972 断言 + 10 条历史缺陷探针 |
-| 版本 | tag `v2.0.0`；GitHub Release 尚未创建 |
+| 版本 | tag `v2.1.0`；GitHub Release 尚未创建 |
 | Topics | 12 / 20 |
 | 社区健康度 | 57%（缺 CONTRIBUTING / CODE_OF_CONDUCT / Issue / PR 模板） |
 | 运行时依赖 | 0（仅 Python 标准库 + SQLite） |
@@ -24,7 +24,7 @@
 
 ## P0 · 公开门面
 
-- [ ] **创建 v2.0.0 Release**（S）
+- [ ] **创建 v2.1.0 Release**（S）
   tag 已存在，只缺 Release 说明。建完后首页会显示 Latest。
 - [ ] **补齐社区文件**（M）
   `CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`.github/ISSUE_TEMPLATE/{bug,feature}.yml`、`.github/pull_request_template.md`。
